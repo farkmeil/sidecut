@@ -118,7 +118,7 @@ profiles:
     tags:
       hell: off          # a tag rule beats its category rule
     pad_ms:
-      mute: [150, 150]   # margin before and after, per action
+      mute: [250, 300]   # margin before and after, per action
       skip: [300, 150]
 ```
 

@@ -55,7 +55,7 @@ def _resolve_filter_arg(target: str, config: Config) -> Path:
 
 def cmd_tag(args: argparse.Namespace) -> int:
     from .asr import WhisperTranscriber
-    from .tagger import TagOptions, merge_language, tag_language
+    from .tagger import NoSubtitles, TagOptions, merge_language, tag_language
     from .wordlist import Wordlist
 
     config = _config(args)
@@ -91,10 +91,12 @@ def cmd_tag(args: argparse.Namespace) -> int:
     transcriber = WhisperTranscriber(args.model, threads=args.threads, device=args.device,
                                      compute_type=args.compute_type)
     failures = 0
+    untitled = []
     for number, (video, target) in enumerate(todo, 1):
         print(f"[{number}/{len(todo)}] {video.name}", flush=True)
         try:
-            options = TagOptions(language=args.language, full=args.full)
+            options = TagOptions(language=args.language, full=args.full, allow_full=not args.no_full,
+                                 vad=not args.no_vad)
             flt, report = tag_language(video, transcriber, wordlist, options,
                                        log=lambda message: print(f"    {message}", flush=True))
             if target.exists():
@@ -103,6 +105,10 @@ def cmd_tag(args: argparse.Namespace) -> int:
                 except FilterError:
                     pass
             model.save(flt, target)
+        except NoSubtitles:
+            untitled.append(video)
+            print("    skipped: no text subtitles (--no-full)", flush=True)
+            continue
         except (media.MediaError, OSError) as err:
             failures += 1
             print(f"    FAILED: {err}", file=sys.stderr, flush=True)
@@ -110,6 +116,9 @@ def cmd_tag(args: argparse.Namespace) -> int:
         tags = ", ".join(f"{tag} {count}" for tag, count in report["by_tag"].items()) or "none"
         print(f"    {report['segments']} language segments ({tags}); {report['method']}; "
               f"{report['elapsed_s']}s -> {target}", flush=True)
+    if untitled:
+        print(f"{len(untitled)} video(s) skipped for lack of text subtitles. Add an .srt next to them, "
+              f"or run again without --no-full to transcribe their whole soundtrack.", flush=True)
     return 1 if failures else 0
 
 
@@ -329,6 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sidecar", action="store_true", help="write next to the video instead of the central store")
     p.add_argument("--force", action="store_true", help="re-tag videos that already have language segments")
     p.add_argument("--full", action="store_true", help="transcribe the whole soundtrack, ignore subtitles")
+    p.add_argument("--no-full", action="store_true",
+                   help="skip videos without text subtitles instead of transcribing their whole soundtrack")
+    p.add_argument("--no-vad", action="store_true",
+                   help="whole-soundtrack mode: do not skip stretches without speech (slower)")
     p.add_argument("--language", default="eng")
     p.add_argument("--model", default=os.environ.get("SIDECUT_MODEL", "small.en"))
     p.add_argument("--device", default=os.environ.get("SIDECUT_DEVICE", "cpu"))

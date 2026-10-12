@@ -31,7 +31,7 @@ Version 0.1. Early, and honest about it:
 |---|---|
 | Filter format, profiles, validation | Working, tested |
 | Kodi EDL, PlexAutoSkip and ffmpeg output | Working, tested (ffmpeg renders checked by measuring the result) |
-| Language tagger | Working. Tested with a scripted recogniser, and run on real films |
+| Language tagger | Working. Tested with a scripted recogniser, measured against ground truth (below), and run on real films |
 | Plex enforcer | Working against a simulated server and player. Real players vary: run `sidecut probe` on yours and start in observe mode |
 | Scene tagging (nudity, violence) | By hand for now (`sidecut add`). Automatic tagging is planned |
 | Shared filter library | Not yet. The format is built for it |
@@ -99,6 +99,31 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
 With no text subtitles (image-based PGS on disc rips, or none) it transcribes
 the whole soundtrack instead. That is slower and depends on recognition alone;
 adding an `.srt` next to the file gives better results.
+
+### How accurate is the timing
+
+`tools/timing_check.py` measures it against ground truth: speech synthesised
+word by word at known offsets, then run through the same recogniser and
+matching. With the default `small.en` model on 80 target words:
+
+| | Clean | With noise (10 dB) |
+|---|---|---|
+| Words found | 68 of 80 | 45 of 80 |
+| Word start error, median (90% within) | 84 ms early (226 ms) | 124 ms early (210 ms) |
+| Word end error, median (90% within) | 65 ms early (135 ms) | 70 ms early (142 ms) |
+| Found words wholly inside the mute, no padding | 1% | 0% |
+| Found words wholly inside the mute, default padding | 94% | 98% |
+
+So padding is not optional: the default is 250 ms before and 300 ms after each
+word. When it falls short, what is heard is an edge of the word, not the word.
+On a real film, two model sizes agreed on word ends within 160 ms for 90% of
+words.
+
+The "words found" row is why subtitles matter. With subtitles, a word the
+recogniser misses still gets its whole line muted. In whole-soundtrack mode a
+missed word is simply missed. Synthetic speech is harder to recognise than
+most film dialogue, so real recall should be better than this, but it will not
+be perfect.
 
 The word list is a plain text file in three tiers, grouped into families
 (`f-word`, `blasphemy`, `hell`, ...) that profiles can switch on or off. See

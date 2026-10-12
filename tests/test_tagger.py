@@ -38,9 +38,11 @@ class Scripted:
     def __init__(self, spoken=SPOKEN):
         self.spoken = spoken
         self.listened = []
+        self.vad_used = []
 
-    def words(self, audio, language="en"):
+    def words(self, audio, language="en", vad=False):
         self.listened.append((audio.start_ms, audio.start_ms + audio.length_ms))
+        self.vad_used.append(vad)
         return [Word(s - audio.start_ms, e - audio.start_ms, " " + text, 0.9)
                 for s, e, text in self.spoken if audio.start_ms <= s and e <= audio.start_ms + audio.length_ms]
 
@@ -105,6 +107,27 @@ def test_full_mode_hears_what_subtitles_leave_out_and_overlaps_are_not_double_co
     assert (36000, "insult") in found                      # not in the subtitles
     assert found.count((10750, "f-word")) == 1             # sits in an overlap between chunks
     assert all(s.source == "asr" for s in flt.segments)
+
+
+def test_speech_detection_is_used_only_for_whole_soundtrack_mode(clips, fake_audio):
+    asr = Scripted()
+    tag_language(clips["movie"], asr, WL)
+    assert asr.vad_used and not any(asr.vad_used)          # short windows: listen to everything
+    asr = Scripted([])
+    tag_language(clips["episode"], asr, WL)
+    assert asr.vad_used and all(asr.vad_used)
+    asr = Scripted([])
+    tag_language(clips["episode"], asr, WL, TagOptions(vad=False))
+    assert not any(asr.vad_used)
+
+
+def test_no_full_refuses_videos_without_text_subtitles(clips, fake_audio):
+    from sidecut.tagger import NoSubtitles
+
+    with pytest.raises(NoSubtitles):
+        tag_language(clips["episode"], Scripted([]), WL, TagOptions(allow_full=False))
+    flt, _ = tag_language(clips["movie"], Scripted(), WL, TagOptions(allow_full=False))
+    assert flt.segments
 
 
 def test_very_short_words_are_widened(clips, fake_audio):

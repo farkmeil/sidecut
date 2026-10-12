@@ -10,9 +10,10 @@ from .wordlist import Word
 
 
 class Transcriber(Protocol):
-    def words(self, audio, language: str = "en") -> list[Word]:
+    def words(self, audio, language: str = "en", vad: bool = False) -> list[Word]:
         """Recognise speech in mono 16 kHz float32 audio. Times are relative
-        to the start of the audio."""
+        to the start of the audio. With vad=True, stretches without speech
+        (music, effects) are skipped before recognition."""
 
 
 class WhisperTranscriber:
@@ -33,14 +34,20 @@ class WhisperTranscriber:
             download_root=model_dir or os.environ.get("SIDECUT_MODEL_DIR") or None,
         )
 
-    def words(self, audio, language: str = "en") -> list[Word]:
+    def words(self, audio, language: str = "en", vad: bool = False) -> list[Word]:
+        extra = {}
+        if vad:
+            # Generous settings: losing a spoken word matters more here than
+            # transcribing a little music.
+            extra = {"vad_filter": True,
+                     "vad_parameters": {"threshold": 0.3, "min_silence_duration_ms": 1500, "speech_pad_ms": 500}}
         segments, _ = self._model.transcribe(
             audio,
             language=language,
             word_timestamps=True,
             beam_size=5,
-            vad_filter=False,
             condition_on_previous_text=False,
+            **extra,
         )
         out: list[Word] = []
         for segment in segments:

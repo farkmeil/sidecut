@@ -41,6 +41,12 @@ class TagOptions:
     chunk_ms: int = 300_000
     chunk_overlap_ms: int = 2000
     min_word_ms: int = 300  # recognisers often clip short words; widen anything shorter than this
+    allow_full: bool = True  # transcribe the whole soundtrack when there are no text subtitles
+    vad: bool = True         # in whole-soundtrack mode, skip stretches without speech
+
+
+class NoSubtitles(media.MediaError):
+    """The video has no text subtitles and whole-soundtrack mode is off."""
 
 
 def guess_identity(path: str | os.PathLike) -> dict:
@@ -110,6 +116,8 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
     subtitle_source = ""
     if not options.full:
         cues, subtitle_source = media.read_subtitles(video, info, options.language)
+        if not cues and not options.allow_full:
+            raise NoSubtitles(f"{video.name}: no text subtitles")
     report: dict = {
         "method": "subtitle+asr" if cues else "asr-full",
         "subtitle_source": subtitle_source,
@@ -117,7 +125,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         "audio_codec": audio_stream.get("codec_name"),
     }
 
-    def listen(start_ms: int, end_ms: int) -> list[TimedMatch]:
+    def listen(start_ms: int, end_ms: int, vad: bool = False) -> list[TimedMatch]:
         start_ms = max(0, start_ms)
         end_ms = min(total_ms, end_ms)
         if end_ms - start_ms < 200:
@@ -125,7 +133,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         audio = media.read_audio(video, start_ms, end_ms - start_ms, audio_index, audio_stream)
         if len(audio) == 0:
             return []
-        words = transcriber.words(audio, whisper_language)
+        words = transcriber.words(audio, whisper_language, vad=vad)
         return [TimedMatch(m.start_ms + start_ms, m.end_ms + start_ms, m.severity, m.tag, m.probability)
                 for m in find_in_words(wordlist, words)]
 
@@ -166,7 +174,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         chunks = max(1, -(-total_ms // step))
         while position < total_ms:
             chunk_number += 1
-            heard.extend(listen(position, position + step + options.chunk_overlap_ms))
+            heard.extend(listen(position, position + step + options.chunk_overlap_ms, vad=options.vad))
             log(f"  chunk {chunk_number}/{chunks}")
             position += step
         heard = _dedupe(heard)
