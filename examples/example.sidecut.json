@@ -1,0 +1,23 @@
+{
+  "sidecut": "0.1",
+  "media": {
+    "title": "Example Movie",
+    "year": 2001,
+    "ids": { "imdb": "tt0000000" },
+    "duration_ms": 5400000,
+    "size": 12345678901,
+    "oshash": "8e245d9679d31e12",
+    "audio_language": "eng"
+  },
+  "generator": { "tool": "sidecut 0.1.0", "created": "2026-10-11T00:00:00Z" },
+  "segments": [
+    { "start_ms": 754120, "end_ms": 754680, "category": "language", "severity": 3, "action": "mute",
+      "tags": ["f-word"], "source": "subtitle+asr", "confidence": 0.94 },
+    { "start_ms": 1201300, "end_ms": 1203900, "category": "language", "severity": 1, "action": "mute",
+      "tags": ["hell"], "note": "whole subtitle line: word not located in audio", "source": "subtitle", "confidence": 0.5 },
+    { "start_ms": 2710000, "end_ms": 2795500, "category": "sex_nudity", "severity": 2,
+      "tags": ["nudity"], "note": "bedroom scene; no plot lost", "source": "manual" },
+    { "start_ms": 4388000, "end_ms": 4402000, "category": "violence", "severity": 3,
+      "tags": ["gore"], "source": "manual" }
+  ]
+}

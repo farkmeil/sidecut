@@ -1,0 +1,14 @@
+# Copy to docker-compose.yml and adjust the three marked lines.
+services:
+  sidecut:
+    build: .
+    image: sidecut:local
+    container_name: sidecut
+    restart: unless-stopped
+    environment:
+      PLEX_URL: http://192.168.1.10:32400      # <- your Plex server
+      PLEX_TOKEN: ${PLEX_TOKEN}                # <- put PLEX_TOKEN=... in a .env file beside this one
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - /path/to/your/media:/media:ro          # <- same folder Plex uses, mounted at the path Plex sees

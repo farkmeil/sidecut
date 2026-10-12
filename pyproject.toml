@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sidecut"
+version = "0.1.0"
+description = "Open content filters for media you own: tag, share, and enforce mute/skip lists in Plex, Kodi and ffmpeg."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+plex = ["requests>=2.31", "websocket-client>=1.7"]
+tagger = ["faster-whisper>=1.0", "numpy>=1.24"]
+all = ["sidecut[plex,tagger]"]
+dev = ["pytest>=8", "jsonschema>=4", "requests>=2.31", "numpy>=1.24"]
+
+[project.scripts]
+sidecut = "sidecut.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sidecut = ["data/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

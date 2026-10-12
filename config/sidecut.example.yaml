@@ -1,0 +1,52 @@
+# sidecut configuration. Everything here has a default; an empty file is valid.
+
+plex:
+  url: http://192.168.1.10:32400     # or set PLEX_URL
+  # token: put it in the PLEX_TOKEN environment variable rather than here
+
+filters:
+  dir: /data/filters                 # central store, mirrors the paths Plex reports
+  sidecar: true                      # also accept Movie.sidecut.json next to Movie.mkv
+
+# Only needed when this process sees the media at a different path than Plex does.
+# path_map:
+#   /media: /mnt/library
+
+# false: observe only. Works out what it would do and logs it; sends nothing
+# to any player except read-only position polls. Flip to true once the log
+# looks right.
+enforce: false
+
+# Plex user name -> profile. "*" is everyone not listed. Unlisted users with
+# no "*" entry are left alone.
+users:
+  Kids: family
+  # "*": language
+
+# Built-in profiles: off, language, family, strict. Define your own here; they
+# can extend a built-in.
+profiles:
+  family-plus:
+    extends: family
+    rules:
+      violence: {min_severity: 2, action: skip}
+      substances: off
+    tags:
+      hell: off                      # leave this word family alone
+      # deity: on                    # also mute the names used on their own
+    pad_ms:
+      mute: [150, 150]               # margin before and after each mute
+      skip: [300, 150]
+
+# Per-player settings, by the player's name in Plex or its machine identifier.
+# players:
+#   "Living Room SHIELD":
+#     port: 32500                    # Companion port (32500 on Android TV)
+#     control: auto                  # auto | direct | proxy (through the server)
+#     mute: volume                   # volume | skip (skip over words instead) | off
+#     mute_fallback: skip            # if the player ignores volume commands: skip | off
+
+# Timing. The defaults suit a wired Android TV box on direct play.
+# tuning:
+#   skip_lead_ms: 350                # send a seek this long before a segment starts
+#   mute_lead_ms: 200

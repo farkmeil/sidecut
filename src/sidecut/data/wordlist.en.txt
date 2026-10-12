@@ -1,0 +1,90 @@
+# sidecut English word list
+#
+# One entry per line:  severity  tag  pattern
+#
+#   severity  1 mild, 2 moderate, 3 strong
+#   tag       word family; profiles can switch a family on or off by tag
+#   pattern   regular expression, matched case-insensitively on whole words.
+#             A space in a pattern matches a space or a hyphen.
+#
+# When two entries match the same text the longer match wins, then the more
+# severe one. Lines starting with # are comments. To use your own list, copy
+# this file, edit it, and pass it with --wordlist.
+
+# --- strong ---------------------------------------------------------------
+3  f-word     (?:mother ?)?f+u+c+k+\w*
+3  f-word     motherf\w+
+3  f-word     (?:cluster|mind|dumb)f+u+c+k\w*
+3  f-word     f+u+c+k+ (?:off|up|you|me|him|her|them|it|this|that)
+3  crude      cunt\w*
+3  crude      cock ?suck\w*
+3  crude      puss(?:y|ies)
+3  slur       nigg(?:er|a|ah|uh)s?
+3  slur       fag(?:s|got\w*|gy)?
+3  slur       dykes?
+3  slur       trann(?:y|ies)
+3  slur       spics?
+3  slur       kikes?
+3  slur       chinks?
+3  slur       gooks?
+3  slur       wetbacks?
+3  slur       coons?
+
+# --- moderate -------------------------------------------------------------
+2  s-word     \w*sh+i+t+\w*
+2  b-word     son(?:s)? of a bitch\w*
+2  b-word     bitch\w*
+2  a-word     ass ?holes?
+2  a-word     arse ?holes?
+2  blasphemy  god ?damn\w*
+2  blasphemy  goddam\w*
+2  blasphemy  jesus (?:h )?christ
+2  blasphemy  jesus (?:f\w+ )christ
+2  blasphemy  for christ'?s sake
+2  blasphemy  christ almighty
+2  crude      dick(?:s|head\w*|wad\w*|ish)?
+2  crude      cocks?
+2  crude      pricks?
+2  crude      tw+ats?
+2  crude      tit(?:s|ties|ty)
+2  crude      wank\w*
+2  crude      jerk(?:ing|ed|s)? off
+2  crude      jack(?:ing|ed|s)? off
+2  crude      blow ?jobs?
+2  crude      bollocks
+2  insult     bastards?
+2  insult     sluts?
+2  insult     slutty
+2  insult     whor(?:e|es|ing)
+2  insult     douche\w*
+2  slur       retard(?:s|ed)?
+
+# --- mild -----------------------------------------------------------------
+1  a-word     ass(?:es)?
+1  a-word     arses?
+1  a-word     (?:jack|dumb|bad|smart|kick|fat|hard|wise|lazy|candy|punk|bitch) ?ass(?:es)?
+1  a-word     ass (?:kick\w*|whoop\w*|wipes?)
+1  damn       damn(?:ed|it|ing|s)?
+1  damn       dammit
+1  hell       hell
+1  hell       hell ?hole
+1  crap       crap(?:s|py|ped|ping)?
+1  piss       piss\w*
+1  crude      screw (?:you|him|her|them|that|this|it|off)
+1  crude      screwed (?:up|over)
+1  crude      bugger\w*
+1  blasphemy  oh,? my,? god
+1  blasphemy  (?:oh|my|dear|good) god
+1  blasphemy  oh,? (?:my )?lord
+1  blasphemy  good lord
+1  blasphemy  for god'?s sake
+1  blasphemy  (?:i )?swear to god
+1  blasphemy  god almighty
+1  blasphemy  holy (?:christ|jesus|mother of god)
+
+# --- deity names used alone -----------------------------------------------
+# Usually an exclamation in films, but also used reverently, so this family
+# is off in the built-in profiles. Turn it on per profile with
+#   tags: {deity: on}
+1  deity      jesus
+1  deity      christ
