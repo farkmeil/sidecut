@@ -114,6 +114,9 @@ class Enforcer:
         except PlexError as err:
             log.warning("could not list sessions: %s", err)
             return
+        except Exception:  # noqa: BLE001 - an odd answer from the server must not stop the enforcer
+            log.exception("could not read the session list")
+            return
         self._last_refresh = now
         with self.lock:
             seen = set()
@@ -123,7 +126,11 @@ class Enforcer:
                 if live is None or live.info.rating_key != info.rating_key:
                     if live is not None:
                         self._close(live, "item changed")
-                    live = self._build(info, now)
+                    try:
+                        live = self._build(info, now)
+                    except Exception as err:  # noqa: BLE001 - leave this session alone, keep serving the others
+                        log.exception("%s: could not set up filtering", info.label)
+                        live = Live(info, None, None, "", f"internal error: {type(err).__name__}")
                     self.sessions[info.key] = live
                     if live.controller is None:
                         log.info("%s: not filtering (%s)", info.label, live.why_idle)
@@ -369,7 +376,11 @@ class Enforcer:
             self.listener.start()
         try:
             while not self._halt.is_set():
-                self.tick()
+                try:
+                    self.tick()
+                except Exception:  # noqa: BLE001 - keep running; the next tick starts clean
+                    log.exception("unexpected error; continuing")
+                    self._halt.wait(1.0)
                 self._halt.wait(tick_s)
         finally:
             self.shutdown()

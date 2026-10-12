@@ -242,6 +242,21 @@ def test_push_report_for_unknown_session_triggers_discovery(lab):
     assert len(player.of("seekTo")) == 1
 
 
+def test_odd_answers_from_the_server_do_not_stop_the_enforcer(lab, caplog):
+    player = lab.player()
+    lab.filter([Segment(1_500, 6_000, "sex_nudity", severity=2)])
+    lab.plex.sessions.append({"sessionKey": "9", "type": "episode", "parentIndex": "x", "index": None,
+                              "grandparentTitle": "Broken", "Media": "nonsense", "Player": None})
+    lab.plex.sessions.append("not even an object")
+    lab.plex.add_session(player, "Kids", MEDIA)
+    enforcer = Enforcer(lab.config(), PlexServer(lab.plex.url, "tok"))
+    with caplog.at_level("ERROR", logger="sidecut.enforcer"):
+        run_for(enforcer, 2.5)
+    enforcer.shutdown()
+    # whatever happened with the malformed entries, the good session was still served
+    assert len(player.of("seekTo")) == 1
+
+
 def test_bad_token_is_reported_plainly(lab):
     from sidecut.plexio import PlexError
 

@@ -147,13 +147,23 @@ class PlexServer:
         return response
 
     def json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.get(path, params).json().get("MediaContainer", {})
+        try:
+            container = self.get(path, params).json().get("MediaContainer", {})
+        except (ValueError, AttributeError) as err:
+            raise PlexError(f"Plex sent an unreadable answer for {path}") from err
+        return container if isinstance(container, dict) else {}
 
     def identity(self) -> dict[str, Any]:
         return self.json("/identity")
 
     def sessions(self) -> list[SessionInfo]:
-        return [parse_session(item) for item in self.json("/status/sessions").get("Metadata", [])]
+        out = []
+        for item in self.json("/status/sessions").get("Metadata") or []:
+            try:
+                out.append(parse_session(item))
+            except Exception:  # noqa: BLE001 - one unreadable entry must not hide the others
+                log.warning("skipping a session entry that could not be read")
+        return out
 
     def clients(self) -> list[dict[str, Any]]:
         return list(self.json("/clients").get("Server", []))

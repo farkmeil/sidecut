@@ -98,7 +98,8 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
 
 With no text subtitles (image-based PGS on disc rips, or none) it transcribes
 the whole soundtrack instead. That is slower and depends on recognition alone;
-adding an `.srt` next to the file gives better results.
+adding an `.srt` next to the file gives better results. `--no-full` skips such
+files and lists them.
 
 ### How accurate is the timing
 
