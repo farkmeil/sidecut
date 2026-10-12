@@ -8,14 +8,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".m2ts", ".wmv", ".webm", ".mpg", ".mpeg"}
 TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub"}  # Blu-ray picture subtitles, readable by OCR
 ENGLISH = {"eng", "en", "english"}
+LANG2 = {"eng": "en", "en": "en", "english": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
+         "ita": "it", "por": "pt", "dut": "nl", "nld": "nl"}
 
 
 class MediaError(RuntimeError):
@@ -168,15 +173,70 @@ def find_sidecar_subtitle(video: str | os.PathLike, language: str = "eng") -> Pa
     return best[1] if best else None
 
 
+def ocr_available() -> bool:
+    """Image subtitles can be read when pgsrip and tesseract are installed."""
+    return shutil.which("pgsrip") is not None and shutil.which("tesseract") is not None
+
+
+def pick_image_subtitles(info: dict, language: str = "eng") -> list[tuple[int, dict]]:
+    """Image subtitle streams worth trying, as (index among subtitle streams,
+    stream), best first: requested language, not forced, not commentary."""
+    wanted = ENGLISH if language.lower() in ENGLISH else {language.lower()}
+    found = []
+    for position, stream in enumerate(s for s in info.get("streams", []) if s.get("codec_type") == "subtitle"):
+        if stream.get("codec_name") not in IMAGE_SUB_CODECS or _lang(stream) not in wanted | {"", "und"}:
+            continue
+        if stream.get("disposition", {}).get("forced") or "forced" in _title(stream) or "comment" in _title(stream):
+            continue
+        found.append((0 if _lang(stream) in wanted else 1, position, stream))
+    return [(position, stream) for _, position, stream in sorted(found, key=lambda item: item[:2])]
+
+
+def ocr_subtitles(video: str | os.PathLike, candidates: list[tuple[int, dict]], language: str = "eng",
+                  timeout: int = 3600) -> tuple[list[Cue], int | None]:
+    """Read image subtitles with OCR. All candidate tracks are copied out in
+    one pass over the file (discs often carry empty or partial tracks), and
+    the fullest one is read. Returns (cues, index of the track used)."""
+    code = LANG2.get(language.lower(), language.lower()[:2])
+    candidates = candidates[:4]
+    with tempfile.TemporaryDirectory(prefix="sidecut-ocr-") as tmp:
+        args = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video)]
+        tracks = {}
+        for index, _ in candidates:
+            tracks[index] = Path(tmp) / f"track{index}.{code}.sup"
+            args += ["-map", f"0:s:{index}", "-c:s", "copy", str(tracks[index])]
+        result = _run(args, timeout=timeout)
+        if result.returncode != 0:
+            raise MediaError(f"could not copy image subtitles: {result.stderr.decode(errors='replace').strip()[:300]}")
+        sizes = {index: path.stat().st_size for index, path in tracks.items() if path.exists()}
+        if not sizes or max(sizes.values()) == 0:
+            return [], None
+        best = max(sizes, key=lambda index: (sizes[index], -index))
+        result = _run(["pgsrip", "rip", "--language", code, "--force", "--all", str(tracks[best])], timeout=timeout)
+        srt = tracks[best].with_suffix(".srt")
+        if result.returncode != 0 or not srt.exists():
+            detail = (result.stderr or result.stdout).decode(errors="replace").strip()[-300:]
+            raise MediaError(f"subtitle OCR failed: {detail}")
+        return parse_srt(srt.read_text(encoding="utf-8", errors="replace")), best
+
+
 def read_subtitles(video: str | os.PathLike, info: dict | None = None, language: str = "eng",
-                   timeout: int = 3600) -> tuple[list[Cue], str]:
-    """Returns (cues, where they came from). Empty list when no text subtitles exist."""
+                   timeout: int = 3600, ocr: bool = True) -> tuple[list[Cue], str]:
+    """Returns (cues, where they came from): a sidecar .srt, an embedded text
+    track, or image subtitles read by OCR, in that order. Empty list when the
+    video has none of these."""
     sidecar = find_sidecar_subtitle(video, language)
     if sidecar:
         return parse_srt(sidecar.read_text(encoding="utf-8", errors="replace")), f"sidecar:{sidecar.name}"
     info = info or probe(video)
     picked = pick_text_subtitle(info, language)
     if not picked:
+        candidates = pick_image_subtitles(info, language) if ocr and ocr_available() else []
+        if candidates:
+            cues, used = ocr_subtitles(video, candidates, language, timeout)
+            if cues:
+                codec = dict(candidates)[used].get("codec_name")
+                return cues, f"ocr:{codec}#{used}"
         return [], ""
     index, stream = picked
     result = _run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(video), "-map", f"0:s:{index}", "-f", "srt", "-"],

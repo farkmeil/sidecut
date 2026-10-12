@@ -66,7 +66,7 @@ def test_tag_to_explicit_file_and_sidecar(env, clips, tmp_path, capsys):
 def test_no_full_skips_and_reports_videos_without_subtitles(env, clips, capsys):
     assert cli.main(["tag", "--no-full", str(clips["root"])]) == 0
     out = capsys.readouterr().out
-    assert "skipped: no text subtitles" in out and "1 video(s) skipped" in out
+    assert "skipped: no usable subtitles" in out and "1 video(s) skipped" in out
     assert (env / "filters/media/movies/Test Movie (2001)/Test Movie (2001).sidecut.json").exists()
     assert not list((env / "filters").rglob("Some Show*"))
 

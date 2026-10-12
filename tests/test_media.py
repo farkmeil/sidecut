@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 
 import pytest
 
@@ -58,6 +59,71 @@ def test_sidecar_subtitle_wins_and_is_matched_by_name(clips, tmp_path):
     (tmp_path / "Film.en.sdh.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nright one\n")
     cues, source = media.read_subtitles(video)
     assert source == "sidecar:Film.en.sdh.srt" and cues[0].text == "right one"
+
+
+PGS_INFO = {"streams": [
+    {"codec_type": "video"},
+    {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "fre"}},
+    {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng", "title": "Forced"},
+     "disposition": {"forced": 1}},
+    {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng"}},
+    {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng", "title": "Commentary"}},
+    {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng", "title": "SDH"}},
+    {"codec_type": "subtitle", "codec_name": "dvd_subtitle", "tags": {"language": "eng"}},
+]}
+
+
+def test_image_subtitle_candidates():
+    assert [index for index, _ in media.pick_image_subtitles(PGS_INFO)] == [2, 4]   # not French, forced, commentary, VobSub
+    assert media.pick_image_subtitles({"streams": []}) == []
+
+
+def test_image_subtitles_are_read_by_ocr_only_when_nothing_better_exists(clips, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_ocr(video, candidates, language="eng", timeout=3600):
+        calls.append([index for index, _ in candidates])
+        return [media.Cue(1000, 2000, "read from the picture")], candidates[-1][0]
+
+    video = tmp_path / "Disc.mkv"
+    shutil.copy(clips["episode"], video)
+    monkeypatch.setattr(media, "ocr_subtitles", fake_ocr)
+    monkeypatch.setattr(media, "ocr_available", lambda: True)
+    cues, source = media.read_subtitles(video, PGS_INFO)
+    assert cues[0].text == "read from the picture" and source == "ocr:hdmv_pgs_subtitle#4" and calls == [[2, 4]]
+    assert media.read_subtitles(video, PGS_INFO, ocr=False) == ([], "")            # switched off
+    monkeypatch.setattr(media, "ocr_available", lambda: False)
+    assert media.read_subtitles(video, PGS_INFO) == ([], "")                       # tools not installed
+    monkeypatch.setattr(media, "ocr_available", lambda: True)
+    (tmp_path / "Disc.en.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nreal text\n")
+    assert media.read_subtitles(video, PGS_INFO)[1] == "sidecar:Disc.en.srt"       # text always wins
+    assert len(calls) == 1
+
+
+def test_ocr_picks_the_fullest_track_and_survives_empty_ones(tmp_path, monkeypatch):
+    ran = []
+
+    def fake_run(args, timeout=None):
+        ran.append(args[0])
+        if args[0] == "ffmpeg":
+            outputs = [a for a in args if str(a).endswith(".sup")]
+            sizes = fake_run.sizes
+            for path, size in zip(outputs, sizes):
+                open(path, "wb").write(b"x" * size)
+        else:
+            sup = args[-1]
+            fake_run.ripped = sup
+            open(sup[:-4] + ".srt", "w").write("1\n00:00:05,000 --> 00:00:06,000\nhello\n")
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(media, "_run", fake_run)
+    candidates = [(2, {"codec_name": "hdmv_pgs_subtitle"}), (4, {"codec_name": "hdmv_pgs_subtitle"})]
+    fake_run.sizes = [10, 500]
+    cues, used = media.ocr_subtitles(tmp_path / "x.mkv", candidates)
+    assert used == 4 and cues[0].text == "hello" and "track4.en.sup" in fake_run.ripped
+    assert ran == ["ffmpeg", "pgsrip"]                      # one pass over the file, one OCR run
+    fake_run.sizes = [0, 0]
+    assert media.ocr_subtitles(tmp_path / "x.mkv", candidates) == ([], None)
 
 
 def test_read_audio_window(clips):

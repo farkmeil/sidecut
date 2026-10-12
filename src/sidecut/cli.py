@@ -96,7 +96,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
         print(f"[{number}/{len(todo)}] {video.name}", flush=True)
         try:
             options = TagOptions(language=args.language, full=args.full, allow_full=not args.no_full,
-                                 vad=not args.no_vad)
+                                 vad=not args.no_vad, ocr=not args.no_ocr)
             flt, report = tag_language(video, transcriber, wordlist, options,
                                        log=lambda message: print(f"    {message}", flush=True))
             if target.exists():
@@ -107,7 +107,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
             model.save(flt, target)
         except NoSubtitles:
             untitled.append(video)
-            print("    skipped: no text subtitles (--no-full)", flush=True)
+            print("    skipped: no usable subtitles (--no-full)", flush=True)
             continue
         except (media.MediaError, OSError) as err:
             failures += 1
@@ -117,7 +117,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
         print(f"    {report['segments']} language segments ({tags}); {report['method']}; "
               f"{report['elapsed_s']}s -> {target}", flush=True)
     if untitled:
-        print(f"{len(untitled)} video(s) skipped for lack of text subtitles. Add an .srt next to them, "
+        print(f"{len(untitled)} video(s) skipped for lack of usable subtitles. Add an .srt next to them, "
               f"or run again without --no-full to transcribe their whole soundtrack.", flush=True)
     return 1 if failures else 0
 
@@ -340,6 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="transcribe the whole soundtrack, ignore subtitles")
     p.add_argument("--no-full", action="store_true",
                    help="skip videos without text subtitles instead of transcribing their whole soundtrack")
+    p.add_argument("--no-ocr", action="store_true", help="do not read image subtitles by OCR")
     p.add_argument("--no-vad", action="store_true",
                    help="whole-soundtrack mode: do not skip stretches without speech (slower)")
     p.add_argument("--language", default="eng")

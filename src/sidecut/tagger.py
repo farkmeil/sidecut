@@ -1,8 +1,8 @@
 """Language tagger: find profanity in a video and write it as filter segments.
 
 Method
-  1. Read text subtitles (sidecar .srt or an embedded text track) and find the
-     lines that contain listed words. Subtitles are only used to decide where
+  1. Read subtitles (a sidecar .srt, an embedded text track, or image
+     subtitles put through OCR) and find the lines that contain listed words. Subtitles are only used to decide where
      to listen; their timing is too loose to mute single words.
   2. Run speech recognition with word timestamps on a few seconds of audio
      around each such line, and match the word list against what was said.
@@ -10,8 +10,7 @@ Method
   3. If a subtitle line shows a listed word that recognition did not hear, the
      whole line is tagged instead, so nothing the subtitles show slips through.
 
-With no text subtitles (image-based PGS, or none at all) the whole soundtrack
-is transcribed instead. That is slower and relies on recognition alone.
+With no usable subtitles at all the whole soundtrack is transcribed instead. That is slower and relies on recognition alone.
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ class TagOptions:
     chunk_overlap_ms: int = 2000
     min_word_ms: int = 300  # recognisers often clip short words; widen anything shorter than this
     allow_full: bool = True  # transcribe the whole soundtrack when there are no text subtitles
+    ocr: bool = True         # read image subtitles (Blu-ray PGS) by OCR when there are no text ones
     vad: bool = True         # in whole-soundtrack mode, skip stretches without speech
 
 
@@ -115,7 +115,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
     cues: list[media.Cue] = []
     subtitle_source = ""
     if not options.full:
-        cues, subtitle_source = media.read_subtitles(video, info, options.language)
+        cues, subtitle_source = media.read_subtitles(video, info, options.language, ocr=options.ocr)
         if not cues and not options.allow_full:
             raise NoSubtitles(f"{video.name}: no text subtitles")
     report: dict = {

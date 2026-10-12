@@ -87,8 +87,9 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
 
 ## How the language tagger works
 
-1. It reads text subtitles (a sidecar `.srt` or an embedded text track) and
-   finds the lines containing listed words. Subtitle timing is too loose to
+1. It reads subtitles and finds the lines containing listed words. Subtitles
+   come from a sidecar `.srt`, an embedded text track, or, for disc rips that
+   only carry picture subtitles (PGS), from OCR of those pictures. Subtitle timing is too loose to
    mute single words, so subtitles only decide *where to listen*.
 2. It runs Whisper with word timestamps on a few seconds of audio around each
    of those lines and matches the word list against what was actually said.
@@ -96,10 +97,13 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
 3. If a subtitle shows a listed word that recognition did not hear, the whole
    line is tagged, so nothing the subtitles show slips through.
 
-With no text subtitles (image-based PGS on disc rips, or none) it transcribes
-the whole soundtrack instead. That is slower and depends on recognition alone;
-adding an `.srt` next to the file gives better results. `--no-full` skips such
-files and lists them.
+With no usable subtitles at all it transcribes the whole soundtrack instead.
+That is slower and depends on recognition alone; adding an `.srt` next to the
+file gives better results. `--no-full` skips such files and lists them.
+
+OCR needs `tesseract` and `pgsrip` (both are in the Docker image). An OCR
+misreading inside a listed word hides that line from step 1, so OCR subtitles
+are a little weaker than real text ones.
 
 ### How accurate is the timing
 
