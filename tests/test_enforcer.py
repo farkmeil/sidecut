@@ -161,15 +161,15 @@ def test_commands_can_be_relayed_through_the_server(lab):
 def test_player_that_ignores_volume_gets_skips_and_is_remembered(lab):
     player = lab.player(honours_volume=False)
     lab.filter([Segment(1_500, 2_500, "language", severity=3, tags=["f-word"]),
-                Segment(5_000, 5_600, "language", severity=3, tags=["f-word"])])
+                Segment(4_600, 5_200, "language", severity=3, tags=["f-word"])])
     lab.plex.add_session(player, "Kids", MEDIA)
     config = lab.config()
     enforcer = Enforcer(config, PlexServer(lab.plex.url, "tok"))
     run_for(enforcer, 5.5)
     enforcer.shutdown()
     seeks = player.of("seekTo")
-    assert seeks and int(seeks[-1][1]["offset"]) == 5_900   # the second word was skipped instead
-    assert seeks[-1][0] < 5_000
+    assert seeks and int(seeks[-1][1]["offset"]) == 5_350   # the second word was skipped instead
+    assert seeks[-1][0] < 4_600
     state = json.loads((lab.tmp / "state.json").read_text())
     assert state["players"]["player-1"]["volume_ok"] is False
 
@@ -184,7 +184,7 @@ def test_player_that_ignores_volume_gets_skips_and_is_remembered(lab):
     assert player2.of("setParameters") == []
     first_at, first = player2.of("seekTo")[0]
     assert first_at < 1_500                       # before the first word this time
-    assert int(first["offset"]) == 5_900          # the two words are close enough to be one skip
+    assert int(first["offset"]) == 5_350          # the two words are close enough to be one skip
 
 
 def test_volume_is_restored_when_playback_stops_mid_mute(lab):

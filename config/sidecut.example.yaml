@@ -35,7 +35,7 @@ profiles:
       hell: off                      # leave this word family alone
       # deity: on                    # also mute the names used on their own
     pad_ms:
-      mute: [250, 300]               # margin before and after each mute
+      mute: [120, 150]               # margin before and after each mute
       skip: [300, 150]
 
 # Per-player settings, by the player's name in Plex or its machine identifier.

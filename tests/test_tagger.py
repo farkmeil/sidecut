@@ -5,7 +5,7 @@ the right audio is listened to and the right intervals come out."""
 import pytest
 
 from sidecut import media, model
-from sidecut.tagger import TagOptions, guess_identity, merge_language, tag_language
+from sidecut.tagger import NoSubtitles, TagOptions, guess_identity, merge_language, tag_language
 from sidecut.wordlist import Word, Wordlist
 
 WL = Wordlist.load()
@@ -61,11 +61,12 @@ def test_subtitles_choose_where_to_listen_and_speech_gives_the_timing(clips, fak
     asr = Scripted()
     flt, report = tag_language(clips["movie"], asr, WL)
     located = [span for span in spans(flt) if span[4] == "subtitle+asr"]
+    # recognised words are widened by the recogniser's measured early bias (130 ms before, 150 after)
     assert located == [
-        (10750, 11200, "f-word", 3, "subtitle+asr"),
-        (20400, 20900, "s-word", 2, "subtitle+asr"),
-        (21100, 21400, "damn", 1, "subtitle+asr"),
-        (31700, 32600, "b-word", 2, "subtitle+asr"),
+        (10620, 11350, "f-word", 3, "subtitle+asr"),
+        (20270, 21050, "s-word", 2, "subtitle+asr"),
+        (20970, 21550, "damn", 1, "subtitle+asr"),
+        (31570, 32750, "b-word", 2, "subtitle+asr"),
     ]
     # "hell" is in the subtitle at 30 s but was not heard: the whole line is tagged as well
     [line] = [span for span in spans(flt) if span[4] == "subtitle"]
@@ -93,7 +94,7 @@ def test_no_subtitles_means_the_whole_soundtrack_is_transcribed(clips, fake_audi
     asr = Scripted(spoken)
     flt, report = tag_language(clips["episode"], asr, WL, TagOptions(chunk_ms=8_000, chunk_overlap_ms=1_000))
     assert report["method"] == "asr-full" and report["chunks"] == 3
-    assert spans(flt) == [(3000, 3400, "s-word", 2, "asr"), (15000, 15600, "a-word", 2, "asr")]
+    assert spans(flt) == [(2870, 3550, "s-word", 2, "asr"), (14870, 15750, "a-word", 2, "asr")]
     assert flt.media.season == 2 and flt.media.episode == 5 and flt.media.title == "Some Show"
     # chunks cover the file end to end
     assert asr.listened[0][0] == 0 and asr.listened[-1][1] >= 19_900
@@ -104,8 +105,8 @@ def test_full_mode_hears_what_subtitles_leave_out_and_overlaps_are_not_double_co
     flt, report = tag_language(clips["movie"], asr, WL,
                                TagOptions(full=True, chunk_ms=10_000, chunk_overlap_ms=2_000))
     found = [(s.start_ms, s.tags[0]) for s in flt.segments]
-    assert (36000, "insult") in found                      # not in the subtitles
-    assert found.count((10750, "f-word")) == 1             # sits in an overlap between chunks
+    assert (35870, "insult") in found                      # not in the subtitles
+    assert found.count((10620, "f-word")) == 1             # sits in an overlap between chunks
     assert all(s.source == "asr" for s in flt.segments)
 
 
@@ -122,8 +123,6 @@ def test_speech_detection_is_used_only_for_whole_soundtrack_mode(clips, fake_aud
 
 
 def test_no_full_refuses_videos_without_text_subtitles(clips, fake_audio):
-    from sidecut.tagger import NoSubtitles
-
     with pytest.raises(NoSubtitles):
         tag_language(clips["episode"], Scripted([]), WL, TagOptions(allow_full=False))
     flt, _ = tag_language(clips["movie"], Scripted(), WL, TagOptions(allow_full=False))
@@ -132,10 +131,23 @@ def test_no_full_refuses_videos_without_text_subtitles(clips, fake_audio):
 
 def test_very_short_words_are_widened(clips, fake_audio):
     spoken = [(3000, 3120, "hell"), (15000, 15600, "asshole")]
-    flt, _ = tag_language(clips["episode"], Scripted(spoken), WL)
+    flt, _ = tag_language(clips["episode"], Scripted(spoken), WL, TagOptions(asr_slack_ms=(0, 0)))
     assert [(s.start_ms, s.end_ms) for s in flt.segments] == [(2910, 3210), (15000, 15600)]
-    flt, _ = tag_language(clips["episode"], Scripted(spoken), WL, TagOptions(min_word_ms=0))
+    flt, _ = tag_language(clips["episode"], Scripted(spoken), WL, TagOptions(min_word_ms=0, asr_slack_ms=(0, 0)))
     assert [(s.start_ms, s.end_ms) for s in flt.segments] == [(3000, 3120), (15000, 15600)]
+
+
+def test_unreadable_subtitles_do_not_stop_the_tagger(clips, fake_audio, monkeypatch):
+    def broken(*args, **kwargs):
+        raise media.MediaError("could not copy image subtitles: damaged")
+
+    monkeypatch.setattr(media, "read_subtitles", broken)
+    messages = []
+    flt, report = tag_language(clips["movie"], Scripted(), WL, log=messages.append)
+    assert report["method"] == "asr-full" and any("unreadable" in m for m in messages)
+    assert [s.tags[0] for s in flt.segments] == ["f-word", "s-word", "damn", "b-word", "insult"]
+    with pytest.raises(NoSubtitles):
+        tag_language(clips["movie"], Scripted(), WL, TagOptions(allow_full=False))
 
 
 def test_clean_file_gives_an_empty_filter(clips, fake_audio):
@@ -154,6 +166,85 @@ def test_retagging_keeps_hand_made_segments(clips, fake_audio):
     assert ("sex_nudity", "manual") in kinds and ("language", "manual") in kinds
     assert sum(1 for s in merged.segments if s.source in ("subtitle+asr", "subtitle")) == len(again.segments)
     assert merged.media.ids == {"imdb": "tt1234567"}
+
+
+class ScriptedAligner:
+    """Places words by looking them up in the spoken table; anything not in it
+    is 'not placed' (probability 0), as with a subtitle the audio contradicts."""
+    model_name = "scripted-aligner"
+
+    def __init__(self, spoken=SPOKEN, score=0.9):
+        self.spoken, self.score = spoken, score
+        self.calls = []
+
+    def align(self, audio, words):
+        self.calls.append((audio.start_ms, audio.start_ms + audio.length_ms, list(words)))
+        out = []
+        cursor = 0
+        for word in words:
+            hit = next(((s, e) for s, e, text in self.spoken
+                        if text.lower() == word.lower() and s >= audio.start_ms + cursor
+                        and e <= audio.start_ms + audio.length_ms), None)
+            if hit:
+                out.append(Word(hit[0] - audio.start_ms, hit[1] - audio.start_ms, word, self.score))
+                cursor = hit[1] - audio.start_ms
+            else:
+                out.append(Word(cursor, cursor, word, 0.0))
+        return out
+
+
+def test_alignment_times_subtitle_words_exactly_and_recognition_fills_in(clips, fake_audio):
+    asr, aligner = Scripted(), ScriptedAligner()
+    flt, report = tag_language(clips["movie"], asr, WL, aligner=aligner)
+    assert report["method"] == "subtitle+align+asr"
+    aligned = [span for span in spans(flt) if span[4] == "subtitle+align"]
+    assert aligned == [                                   # exact spoken intervals, no widening
+        (10750, 11200, "f-word", 3, "subtitle+align"),
+        (20400, 20900, "s-word", 2, "subtitle+align"),
+        (21100, 21400, "damn", 1, "subtitle+align"),
+        (31700, 32600, "b-word", 2, "subtitle+align"),
+    ]
+    assert not [span for span in spans(flt) if span[4] == "subtitle+asr"]   # heard words that were aligned are not doubled
+    [line] = [span for span in spans(flt) if span[4] == "subtitle"]          # "hell" was not placed: whole line
+    assert abs(line[0] - 30_000) <= 50 and abs(line[1] - 33_000) <= 50
+    assert report["words_aligned"] == 4 and report["whole_line_fallbacks"] == 1
+    assert flt.generator["language_tagger"]["aligner"] == "scripted-aligner"
+    # the aligner was given the full text of every line inside each window
+    assert [w for _, _, ws in aligner.calls for w in ws][:5] == ["What", "the", "fuck", "is", "that"]
+    assert len(aligner.calls) == len(asr.listened) == 3
+
+
+def test_alignment_alone_skips_recognition(clips, fake_audio):
+    asr = Scripted()
+    flt, report = tag_language(clips["movie"], asr, WL, TagOptions(asr=False), aligner=ScriptedAligner())
+    assert report["method"] == "subtitle+align" and asr.listened == []
+    assert sorted(s.source for s in flt.segments) == ["subtitle", "subtitle+align", "subtitle+align",
+                                                      "subtitle+align", "subtitle+align"]
+
+
+def test_low_alignment_scores_fall_back_to_recognition_then_whole_line(clips, fake_audio):
+    flt, report = tag_language(clips["movie"], Scripted(), WL, aligner=ScriptedAligner(score=0.2))
+    assert report["words_aligned"] == 0
+    assert sorted(s.source for s in flt.segments) == ["subtitle", "subtitle+asr", "subtitle+asr", "subtitle+asr",
+                                                      "subtitle+asr"]
+    flt, report = tag_language(clips["movie"], Scripted([]), WL, TagOptions(asr=False),
+                               aligner=ScriptedAligner(score=0.2))
+    assert all(s.source == "subtitle" for s in flt.segments) and report["whole_line_fallbacks"] == 3
+
+
+def test_alignment_windows_cover_whole_lines_and_are_split_when_long():
+    from sidecut.tagger import _alignment_windows
+
+    cues = [media.Cue(1_000, 3_000, "a"), media.Cue(3_500, 6_000, "b"), media.Cue(20_000, 22_000, "c")]
+    # a window that cuts into line "b" grows to include it whole
+    assert _alignment_windows([(2_000, 4_000)], cues, 500, 60_000) == [(500, 6_500)]
+    # a long run of lines is split between lines rather than aligned in one go
+    long = [media.Cue(i * 3_000, i * 3_000 + 2_500, "x") for i in range(10)]
+    pieces = _alignment_windows([(0, 30_000)], long, 500, 10_000)
+    assert len(pieces) >= 3 and all(end - start <= 10_000 for start, end in pieces)
+    assert pieces[0][0] == -500 and pieces[-1][1] == 30_000
+    # every line is wholly inside one piece
+    assert all(any(start <= c.start_ms and c.end_ms <= end for start, end in pieces) for c in long)
 
 
 @pytest.mark.parametrize("path, expected", [

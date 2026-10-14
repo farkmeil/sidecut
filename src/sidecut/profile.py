@@ -12,7 +12,7 @@ from typing import Any
 
 from .model import ACTIONS, CATEGORIES, Filter, Segment
 
-DEFAULT_PAD_MS = {"mute": (250, 300), "skip": (300, 150)}
+DEFAULT_PAD_MS = {"mute": (120, 150), "skip": (300, 150)}
 DEFAULT_MERGE_GAP_MS = {"mute": 250, "skip": 2000}
 MIN_ACTION_MS = 40
 

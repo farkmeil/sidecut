@@ -2,15 +2,21 @@
 
 Method
   1. Read subtitles (a sidecar .srt, an embedded text track, or image
-     subtitles put through OCR) and find the lines that contain listed words. Subtitles are only used to decide where
-     to listen; their timing is too loose to mute single words.
-  2. Run speech recognition with word timestamps on a few seconds of audio
-     around each such line, and match the word list against what was said.
-     That gives a tight interval per word.
-  3. If a subtitle line shows a listed word that recognition did not hear, the
+     subtitles put through OCR) and find the lines that contain listed words.
+     Subtitles only decide where to listen; their timing is too loose to mute
+     single words.
+  2. Align the text of those lines to the audio around them (forced
+     alignment), which places every word of the line to within a few tens of
+     milliseconds. A word the aligner could not place convincingly (the audio
+     does not say what the subtitle shows) is left to the next steps.
+  3. Run speech recognition with word timestamps on the same audio and match
+     the word list against what was said. This catches words the subtitles
+     left out, and times words the aligner could not place.
+  4. If a subtitle line shows a listed word that neither step placed, the
      whole line is tagged instead, so nothing the subtitles show slips through.
 
-With no usable subtitles at all the whole soundtrack is transcribed instead. That is slower and relies on recognition alone.
+With no usable subtitles at all the whole soundtrack is transcribed instead.
+That is slower and relies on recognition alone.
 """
 
 from __future__ import annotations
@@ -23,9 +29,10 @@ from pathlib import Path
 from typing import Callable
 
 from . import media
+from .align import Aligner, spoken_words
 from .asr import Transcriber
 from .model import Filter, MediaRef, Segment, default_generator
-from .wordlist import TimedMatch, Wordlist, find_in_words
+from .wordlist import TimedMatch, Word, Wordlist, find_in_words
 
 WHISPER_LANG = {"eng": "en", "en": "en", "english": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de",
                 "deu": "de"}
@@ -43,6 +50,10 @@ class TagOptions:
     allow_full: bool = True  # transcribe the whole soundtrack when there are no text subtitles
     ocr: bool = True         # read image subtitles (Blu-ray PGS) by OCR when there are no text ones
     vad: bool = True         # in whole-soundtrack mode, skip stretches without speech
+    asr: bool = True         # run recognition on subtitle windows as well as alignment
+    align_min_score: float = 0.4   # below this an aligned word is treated as not placed
+    align_window_max_ms: int = 45_000
+    asr_slack_ms: tuple[int, int] = (130, 150)  # recognised words start and end early by about this much
 
 
 class NoSubtitles(media.MediaError):
@@ -83,6 +94,33 @@ def _merge_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
+def _alignment_windows(windows: list[tuple[int, int]], cues: list[media.Cue], pad_ms: int,
+                       max_ms: int) -> list[tuple[int, int]]:
+    """Widen listening windows so every subtitle line they touch is inside
+    them whole, since the aligner is told the text of those lines. Windows
+    that would grow past `max_ms` are split between lines instead."""
+    out: list[tuple[int, int]] = []
+    for start, end in windows:
+        inside = [c for c in cues if c.end_ms > start and c.start_ms < end]
+        lo = min([start] + [c.start_ms - pad_ms for c in inside])
+        hi = max([end] + [c.end_ms + pad_ms for c in inside])
+        if hi - lo <= max_ms or not inside:
+            out.append((lo, hi))
+            continue
+        group: list[media.Cue] = []
+        for cue in inside:
+            if group and cue.end_ms + pad_ms - (group[0].start_ms - pad_ms) > max_ms:
+                out.append((group[0].start_ms - pad_ms, group[-1].end_ms + pad_ms))
+                group = []
+            group.append(cue)
+        out.append((group[0].start_ms - pad_ms, group[-1].end_ms + pad_ms))
+    return sorted(out)
+
+
+def _same_word(a: TimedMatch, b: TimedMatch, slack_ms: int = 250) -> bool:
+    return a.start_ms < b.end_ms + slack_ms and b.start_ms < a.end_ms + slack_ms
+
+
 def _dedupe(matches: list[TimedMatch]) -> list[TimedMatch]:
     """Chunk overlaps can hear the same word twice."""
     out: list[TimedMatch] = []
@@ -97,7 +135,8 @@ def _dedupe(matches: list[TimedMatch]) -> list[TimedMatch]:
 
 def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: Wordlist,
                  options: TagOptions | None = None,
-                 log: Callable[[str], None] = lambda message: None) -> tuple[Filter, dict]:
+                 log: Callable[[str], None] = lambda message: None,
+                 aligner: Aligner | None = None) -> tuple[Filter, dict]:
     """Returns (filter, report). Never modifies the video."""
     options = options or TagOptions()
     started = time.monotonic()
@@ -115,45 +154,90 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
     cues: list[media.Cue] = []
     subtitle_source = ""
     if not options.full:
-        cues, subtitle_source = media.read_subtitles(video, info, options.language, ocr=options.ocr)
+        try:
+            cues, subtitle_source = media.read_subtitles(video, info, options.language, ocr=options.ocr)
+        except media.MediaError as err:
+            if not options.allow_full:
+                raise NoSubtitles(f"{video.name}: subtitles unreadable: {err}") from err
+            log(f"subtitles unreadable ({err}); carrying on without them")
         if not cues and not options.allow_full:
             raise NoSubtitles(f"{video.name}: no text subtitles")
+    if cues and aligner is None:
+        method = "subtitle+asr"
+    elif cues:
+        method = "subtitle+align+asr" if options.asr else "subtitle+align"
+    else:
+        method = "asr-full"
     report: dict = {
-        "method": "subtitle+asr" if cues else "asr-full",
+        "method": method,
         "subtitle_source": subtitle_source,
         "audio_stream": audio_index,
         "audio_codec": audio_stream.get("codec_name"),
     }
 
+    def clip(start_ms: int, end_ms: int) -> tuple[int, int]:
+        return max(0, start_ms), min(total_ms, end_ms)
+
+    def hear(audio, offset_ms: int, vad: bool = False) -> list[TimedMatch]:
+        words = transcriber.words(audio, whisper_language, vad=vad)
+        return [TimedMatch(m.start_ms + offset_ms, m.end_ms + offset_ms, m.severity, m.tag, m.probability)
+                for m in find_in_words(wordlist, words)]
+
     def listen(start_ms: int, end_ms: int, vad: bool = False) -> list[TimedMatch]:
-        start_ms = max(0, start_ms)
-        end_ms = min(total_ms, end_ms)
+        start_ms, end_ms = clip(start_ms, end_ms)
         if end_ms - start_ms < 200:
             return []
         audio = media.read_audio(video, start_ms, end_ms - start_ms, audio_index, audio_stream)
-        if len(audio) == 0:
-            return []
-        words = transcriber.words(audio, whisper_language, vad=vad)
-        return [TimedMatch(m.start_ms + start_ms, m.end_ms + start_ms, m.severity, m.tag, m.probability)
-                for m in find_in_words(wordlist, words)]
+        return hear(audio, start_ms, vad) if len(audio) else []
 
     segments: list[Segment] = []
     heard: list[TimedMatch] = []
+    aligned: list[TimedMatch] = []
     if cues:
-        hit_cues = [(cue, found) for cue in cues if (found := wordlist.find(cue.text))]
+        hit_cues = [(index, cue, found) for index, cue in enumerate(cues) if (found := wordlist.find(cue.text))]
         windows = _merge_windows([(cue.start_ms - options.window_pad_ms, cue.end_ms + options.window_pad_ms)
-                                  for cue, _ in hit_cues])
+                                  for _, cue, _ in hit_cues])
+        if aligner is not None:
+            windows = _alignment_windows(windows, cues, options.window_pad_ms, options.align_window_max_ms)
         log(f"{len(cues)} subtitle lines, {len(hit_cues)} with listed words, {len(windows)} audio windows "
-            f"({sum(e - s for s, e in windows) / 1000:.0f}s to transcribe)")
+            f"({sum(e - s for s, e in windows) / 1000:.0f}s to listen to)")
+        hit_index = {index for index, _, _ in hit_cues}
+        aligned_by_cue: dict[int, list[TimedMatch]] = {}
         for number, (start, end) in enumerate(windows, 1):
-            heard.extend(listen(start, end))
+            start, end = clip(start, end)
+            if end - start < 200:
+                continue
+            audio = media.read_audio(video, start, end - start, audio_index, audio_stream)
+            if len(audio) == 0:
+                continue
+            if aligner is not None:
+                inside = [(index, cue) for index, cue in enumerate(cues)
+                          if cue.start_ms >= start and cue.end_ms <= end and index not in aligned_by_cue]
+                words: list[str] = []
+                owners: list[int] = []
+                for index, cue in inside:
+                    spoken = spoken_words(cue.text)
+                    words.extend(spoken)
+                    owners.extend([index] * len(spoken))
+                placed = aligner.align(audio, words) if words else []
+                for index, cue in inside:
+                    aligned_by_cue[index] = []
+                    if index not in hit_index:
+                        continue
+                    cue_words = [Word(w.start_ms + start, w.end_ms + start, w.text, w.probability)
+                                 for w, owner in zip(placed, owners) if owner == index]
+                    aligned_by_cue[index] = [m for m in find_in_words(wordlist, cue_words)
+                                             if m.probability >= options.align_min_score]
+                    aligned.extend(aligned_by_cue[index])
+            if options.asr or aligner is None:
+                heard.extend(hear(audio, start))
             if number % 25 == 0:
                 log(f"  window {number}/{len(windows)}")
-        heard = _dedupe(heard)
+        heard = [m for m in _dedupe(heard) if not any(_same_word(m, a) for a in aligned)]
         whole_lines = 0
-        for cue, found in hit_cues:
+        for index, cue, found in hit_cues:
             lo, hi = cue.start_ms - options.cue_slack_ms, cue.end_ms + options.cue_slack_ms
-            located = sum(1 for m in heard if lo <= (m.start_ms + m.end_ms) // 2 <= hi)
+            located = len(aligned_by_cue.get(index, [])) + sum(1 for m in heard if lo <= (m.start_ms + m.end_ms) // 2 <= hi)
             if located >= len(found):
                 continue
             worst = max(found, key=lambda m: m.severity)
@@ -164,7 +248,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
                 note="whole subtitle line: word not located in audio", source="subtitle", confidence=0.5,
             ))
         report.update(subtitle_lines=len(cues), lines_with_hits=len(hit_cues), windows=len(windows),
-                      whole_line_fallbacks=whole_lines)
+                      words_aligned=len(aligned), whole_line_fallbacks=whole_lines)
     else:
         log("no text subtitles found; transcribing the whole soundtrack" if not options.full
             else "transcribing the whole soundtrack")
@@ -180,16 +264,27 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         heard = _dedupe(heard)
         report.update(chunks=chunks)
 
-    source = "subtitle+asr" if cues else "asr"
+    before, after = options.asr_slack_ms
     for match in heard:
-        start_ms, end_ms = match.start_ms, match.end_ms
+        # recognised words come out a little early at both ends (measured in tools/timing_check.py)
+        start_ms, end_ms = max(0, match.start_ms - before), min(total_ms, match.end_ms + after)
         short_by = options.min_word_ms - (end_ms - start_ms)
         if short_by > 0:
             start_ms = max(0, start_ms - short_by // 2)
             end_ms = min(total_ms, start_ms + options.min_word_ms)
         segments.append(Segment(
             start_ms=start_ms, end_ms=end_ms, category="language", severity=match.severity,
-            action="mute", tags=[match.tag], source=source, confidence=match.probability,
+            action="mute", tags=[match.tag], source="subtitle+asr" if cues else "asr", confidence=match.probability,
+        ))
+    for match in aligned:
+        start_ms, end_ms = match.start_ms, min(total_ms, match.end_ms)
+        short_by = options.min_word_ms - (end_ms - start_ms)
+        if short_by > 0:
+            start_ms = max(0, start_ms - short_by // 2)
+            end_ms = min(total_ms, start_ms + options.min_word_ms)
+        segments.append(Segment(
+            start_ms=start_ms, end_ms=end_ms, category="language", severity=match.severity,
+            action="mute", tags=[match.tag], source="subtitle+align", confidence=round(match.probability, 3),
         ))
     segments.sort(key=lambda s: (s.start_ms, s.end_ms))
 
@@ -207,10 +302,11 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
     generator["language_tagger"] = {
         "method": report["method"],
         "model": getattr(transcriber, "model_name", ""),
+        "aligner": getattr(aligner, "model_name", "") if aligner is not None else "",
         "subtitles": subtitle_source,
     }
     report.update(
-        words_located=len(heard),
+        words_located=len(heard) + len(aligned),
         segments=len(segments),
         by_tag=_count(segments),
         elapsed_s=round(time.monotonic() - started, 1),
@@ -229,7 +325,7 @@ def _count(segments: list[Segment]) -> dict[str, int]:
 def merge_language(existing: Filter, fresh: Filter) -> Filter:
     """Re-tagging replaces machine-made language segments and keeps everything
     else (hand-tagged scenes, hand-added language segments)."""
-    machine = {"subtitle", "subtitle+asr", "asr"}
+    machine = {"subtitle", "subtitle+asr", "subtitle+align", "asr"}
     kept = [s for s in existing.segments if not (s.category == "language" and s.source in machine)]
     generator = dict(existing.generator)
     generator.update(fresh.generator)

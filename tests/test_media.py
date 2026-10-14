@@ -126,6 +126,34 @@ def test_ocr_picks_the_fullest_track_and_survives_empty_ones(tmp_path, monkeypat
     assert media.ocr_subtitles(tmp_path / "x.mkv", candidates) == ([], None)
 
 
+def test_damaged_picture_subtitles_are_copied_with_mkvextract_instead(tmp_path, monkeypatch):
+    ran = []
+
+    def fake_run(args, timeout=None):
+        ran.append(args[0])
+        if args[0] == "ffmpeg":
+            return subprocess.CompletedProcess(args, 1, b"", b"[sup] Not enough data, skipping 140 bytes")
+        if args[0] == "mkvextract":
+            track, path = args[-1].split(":", 1)
+            fake_run.tracks.append(int(track))
+            open(path, "wb").write(b"x" * 300)
+        else:
+            open(args[-1][:-4] + ".srt", "w").write("1\n00:00:05,000 --> 00:00:06,000\nhello\n")
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    fake_run.tracks = []
+    monkeypatch.setattr(media, "_run", fake_run)
+    monkeypatch.setattr(media.shutil, "which", lambda name: f"/usr/bin/{name}")
+    candidates = [(2, {"codec_name": "hdmv_pgs_subtitle", "index": 5})]
+    cues, used = media.ocr_subtitles(tmp_path / "x.mkv", candidates)
+    assert used == 2 and cues[0].text == "hello"
+    assert ran == ["ffmpeg", "mkvextract", "pgsrip"] and fake_run.tracks == [5]   # container track id, not the subtitle index
+
+    monkeypatch.setattr(media.shutil, "which", lambda name: None)
+    with pytest.raises(media.MediaError, match="Not enough data"):
+        media.ocr_subtitles(tmp_path / "x.mkv", candidates)
+
+
 def test_read_audio_window(clips):
     np = pytest.importorskip("numpy")
     info = media.probe(clips["movie"])

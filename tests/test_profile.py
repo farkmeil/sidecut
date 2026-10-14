@@ -23,7 +23,7 @@ def test_family_preset_mutes_language_and_skips_sex_but_not_mild_violence():
         Segment(300_000, 305_000, "substances", 3),
     ), PROFILES["family"])
     assert spans(plan) == [
-        ("mute", 9_750, 10_800),
+        ("mute", 9_880, 10_650),
         ("skip", 59_700, 90_150),
         ("skip", 199_700, 210_150),
     ]
@@ -41,7 +41,7 @@ def test_nearby_mutes_merge_and_distant_ones_do_not():
         Segment(10_000, 10_300, "language", 3), Segment(10_700, 11_000, "language", 3),
         Segment(20_000, 20_300, "language", 3),
     ), PROFILES["language"])
-    assert spans(plan) == [("mute", 9_750, 11_300), ("mute", 19_750, 20_600)]
+    assert spans(plan) == [("mute", 9_880, 11_150), ("mute", 19_880, 20_450)]
 
 
 def test_skips_close_together_become_one_so_the_player_seeks_once():
@@ -56,7 +56,7 @@ def test_a_skip_swallows_mutes_inside_it_and_trims_ones_that_straddle():
         Segment(60_000, 60_500, "language", 3),        # inside the skip: gone
         Segment(79_900, 81_000, "language", 3),        # straddles the end: trimmed
     ), PROFILES["family"])
-    assert spans(plan) == [("skip", 49_700, 80_150), ("mute", 80_150, 81_300)]
+    assert spans(plan) == [("skip", 49_700, 80_150), ("mute", 80_150, 81_150)]
     for a, b in zip(plan, plan[1:]):
         assert a.end_ms <= b.start_ms
 
@@ -73,9 +73,9 @@ def test_tag_rules_override_category_rules():
                               "devout": {"extends": "family", "tags": {"deity": "on"}}})
     f = flt(Segment(1_000, 1_400, "language", 1, tags=["hell"]), Segment(5_000, 5_400, "language", 3, tags=["f-word"]),
             Segment(9_000, 9_400, "language", 1, tags=["deity"]))
-    assert [a.start_ms for a in resolve(f, profiles["relaxed"])] == [4_750]
-    assert [a.start_ms for a in resolve(f, profiles["family"])] == [750, 4_750]      # deity is opt-in
-    assert [a.start_ms for a in resolve(f, profiles["devout"])] == [750, 4_750, 8_750]
+    assert [a.start_ms for a in resolve(f, profiles["relaxed"])] == [4_880]
+    assert [a.start_ms for a in resolve(f, profiles["family"])] == [880, 4_880]      # deity is opt-in
+    assert [a.start_ms for a in resolve(f, profiles["devout"])] == [880, 4_880, 8_880]
 
 
 def test_profile_can_change_action_severity_and_padding():
@@ -100,7 +100,7 @@ def test_reasons_and_stats():
                        Segment(10_400, 10_700, "language", 2, tags=["s-word"]),
                        Segment(60_000, 90_000, "sex_nudity", 2)), PROFILES["family"])
     assert plan[0].reasons == ("language:f-word", "language:s-word")
-    assert plan_stats(plan) == {"skips": 1, "skipped_ms": 30_450, "mutes": 1, "muted_ms": 1_250}
+    assert plan_stats(plan) == {"skips": 1, "skipped_ms": 30_450, "mutes": 1, "muted_ms": 970}
 
 
 @pytest.mark.parametrize("raw, message", [

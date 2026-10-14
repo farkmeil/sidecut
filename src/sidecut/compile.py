@@ -50,7 +50,7 @@ def _between(actions: Sequence[Action]) -> str:
 
 def to_ffmpeg(actions: Sequence[Action], src: str, dst: str, audio_stream: int = 0,
               video_codec: Sequence[str] = ("libx264", "-crf", "18", "-preset", "medium"),
-              audio_codec: Sequence[str] = ("aac", "-b:a", "256k")) -> list[str]:
+              audio_codec: Sequence[str] = ("aac", "-b:a", "256k"), subtitles: bool = True) -> list[str]:
     """Arguments for an ffmpeg run that writes a filtered copy of `src`.
 
     With mutes only, video is copied untouched and only the chosen audio
@@ -65,7 +65,8 @@ def to_ffmpeg(actions: Sequence[Action], src: str, dst: str, audio_stream: int =
     if mutes:
         audio_filters.append(f"volume=enable='{_between(mutes)}':volume=0")
     if not skips:
-        args += ["-map", "0:v:0?", "-map", f"0:a:{audio_stream}", "-map", "0:s?", "-c:v", "copy", "-c:s", "copy"]
+        args += ["-map", "0:v:0?", "-map", f"0:a:{audio_stream}", "-c:v", "copy"]
+        args += ["-map", "0:s?", "-c:s", "copy"] if subtitles else ["-sn"]
         if audio_filters:
             args += ["-af", ",".join(audio_filters), "-c:a", *audio_codec]
         else:

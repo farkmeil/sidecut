@@ -79,7 +79,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
         if target.exists() and not args.force:
             try:
                 existing = model.load(target)
-                if any(s.category == "language" and s.source in ("subtitle", "subtitle+asr", "asr")
+                if any(s.category == "language" and s.source in ("subtitle", "subtitle+asr", "subtitle+align", "asr")
                        for s in existing.segments) or existing.generator.get("language_tagger"):
                     print(f"skip (already tagged): {video.name}")
                     continue
@@ -90,15 +90,17 @@ def cmd_tag(args: argparse.Namespace) -> int:
         return 0
     transcriber = WhisperTranscriber(args.model, threads=args.threads, device=args.device,
                                      compute_type=args.compute_type)
+    aligner = None if args.no_align else _aligner(args.align_model, args.threads)
     failures = 0
     untitled = []
     for number, (video, target) in enumerate(todo, 1):
         print(f"[{number}/{len(todo)}] {video.name}", flush=True)
         try:
             options = TagOptions(language=args.language, full=args.full, allow_full=not args.no_full,
-                                 vad=not args.no_vad, ocr=not args.no_ocr)
+                                 vad=not args.no_vad, ocr=not args.no_ocr, asr=not args.no_asr)
             flt, report = tag_language(video, transcriber, wordlist, options,
-                                       log=lambda message: print(f"    {message}", flush=True))
+                                       log=lambda message: print(f"    {message}", flush=True),
+                                       aligner=aligner if _is_english(args.language) else None)
             if target.exists():
                 try:
                     flt = merge_language(model.load(target), flt)
@@ -120,6 +122,25 @@ def cmd_tag(args: argparse.Namespace) -> int:
         print(f"{len(untitled)} video(s) skipped for lack of usable subtitles. Add an .srt next to them, "
               f"or run again without --no-full to transcribe their whole soundtrack.", flush=True)
     return 1 if failures else 0
+
+
+def _is_english(language: str) -> bool:
+    return language.lower() in media.ENGLISH
+
+
+def _aligner(model: str | None, threads: int):
+    """The forced aligner, downloaded on first use. English only for now."""
+    from .align import AlignError, OnnxAligner, ensure_model
+
+    try:
+        path = Path(model) if model and Path(model).suffix == ".onnx" else ensure_model(
+            model or os.environ.get("SIDECUT_MODEL_DIR") or None,
+            log=lambda message: print(f"{message}", flush=True))
+        return OnnxAligner(path, threads=threads)
+    except (AlignError, OSError) as err:
+        print(f"forced alignment unavailable ({err}); timing words by recognition alone", file=sys.stderr,
+              flush=True)
+        return None
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -210,6 +231,31 @@ def cmd_compile(args: argparse.Namespace) -> int:
     _out(compiler.render(plan, args.format, key=key, src=args.video, dst=args.render_to,
                          audio_stream=args.audio_stream), args.out)
     return 0
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    """Write a filtered copy of a library tree."""
+    from .renderer import RenderOptions, render_library
+
+    config = _config(args)
+    profile = config.profiles.get(args.profile)
+    if not profile:
+        raise ProfileError(f"unknown profile '{args.profile}' (known: {', '.join(sorted(config.profiles))})")
+    source = Path(args.source)
+    if not source.exists():
+        print(f"no such folder: {source}", file=sys.stderr)
+        return 1
+    options = RenderOptions(profile=profile, source_root=source if source.is_dir() else source.parent,
+                            dest_root=Path(args.to), with_skips=args.with_skips, clean=args.clean,
+                            untagged=args.untagged, force=args.force, dry_run=args.dry_run, language=args.language)
+    report = render_library(_store(config), options, log=lambda message: print(message, flush=True))
+    print(f"{'would render' if args.dry_run else 'rendered'} {len(report.rendered)}, linked {len(report.linked)}, "
+          f"up to date {len(report.up_to_date)}, skipped {len(report.skipped)}, failed {len(report.failed)}")
+    for video, why in report.skipped:
+        print(f"  skipped {video.name}: {why}")
+    for video, why in report.failed:
+        print(f"  FAILED {video.name}: {why}", file=sys.stderr)
+    return 1 if report.failed else 0
 
 
 def cmd_profiles(args: argparse.Namespace) -> int:
@@ -343,6 +389,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-ocr", action="store_true", help="do not read image subtitles by OCR")
     p.add_argument("--no-vad", action="store_true",
                    help="whole-soundtrack mode: do not skip stretches without speech (slower)")
+    p.add_argument("--no-align", action="store_true",
+                   help="do not align subtitle text to the audio; time words by recognition alone")
+    p.add_argument("--no-asr", action="store_true",
+                   help="with subtitles, skip recognition and rely on alignment alone (faster)")
+    p.add_argument("--align-model", default=os.environ.get("SIDECUT_ALIGN_MODEL"),
+                   help="alignment model .onnx, or the folder to download it to (default: the model dir)")
     p.add_argument("--language", default="eng")
     p.add_argument("--model", default=os.environ.get("SIDECUT_MODEL", "small.en"))
     p.add_argument("--device", default=os.environ.get("SIDECUT_DEVICE", "cpu"))
@@ -382,6 +434,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audio-stream", type=int, default=0)
     p.add_argument("--out", help="write here instead of stdout")
     p.set_defaults(func=cmd_compile)
+
+    p = sub.add_parser("render", help="write filtered copies of a whole folder (a 'family' library)")
+    p.add_argument("source", help="folder of videos (or one video)")
+    p.add_argument("--to", required=True, help="output folder; the layout under SOURCE is mirrored there")
+    p.add_argument("--profile", required=True)
+    p.add_argument("--with-skips", action="store_true",
+                   help="cut skipped scenes too (re-encodes video, slow); default: mutes only, video copied")
+    p.add_argument("--clean", choices=("link", "copy", "skip"), default="link",
+                   help="files the profile leaves untouched: hard-link (or symlink), copy, or leave out")
+    p.add_argument("--untagged", choices=("skip", "link", "copy"), default="skip",
+                   help="files with no filter yet (default: leave out, so nothing unfiltered gets in)")
+    p.add_argument("--force", action="store_true", help="re-render files that are already up to date")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--language", default="eng")
+    p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("profiles", help="list profiles and user mappings")
     p.set_defaults(func=cmd_profiles)

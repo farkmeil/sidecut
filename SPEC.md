@@ -82,7 +82,7 @@ applied. A filter that fails the check must not be applied.
 | `action` | no | Suggested handling: `mute` (silence audio, picture continues) or `skip` (jump over). Default is `mute` for `language`, `skip` for everything else. A profile may override it. |
 | `tags` | no | Free-form finer labels, e.g. `f-word`, `blasphemy`, `nudity`, `gore`. Profiles can switch individual tags on or off. |
 | `note` | no | Human note, e.g. what plot is lost by skipping. |
-| `source` | no | How the segment was made: `manual`, `subtitle`, `subtitle+asr`, `asr`, or a tool name. |
+| `source` | no | How the segment was made: `manual`, `subtitle`, `subtitle+align`, `subtitle+asr`, `asr`, or a tool name. |
 | `confidence` | no | 0 to 1, for machine-made segments. |
 
 Segments may overlap and may be listed in any order.
@@ -118,7 +118,7 @@ profiles:
     tags:
       hell: off          # a tag rule beats its category rule
     pad_ms:
-      mute: [250, 300]   # margin before and after, per action
+      mute: [120, 150]   # margin before and after, per action
       skip: [300, 150]
 ```
 

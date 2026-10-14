@@ -200,16 +200,12 @@ def ocr_subtitles(video: str | os.PathLike, candidates: list[tuple[int, dict]], 
     code = LANG2.get(language.lower(), language.lower()[:2])
     candidates = candidates[:4]
     with tempfile.TemporaryDirectory(prefix="sidecut-ocr-") as tmp:
-        args = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video)]
-        tracks = {}
-        for index, _ in candidates:
-            tracks[index] = Path(tmp) / f"track{index}.{code}.sup"
-            args += ["-map", f"0:s:{index}", "-c:s", "copy", str(tracks[index])]
-        result = _run(args, timeout=timeout)
-        if result.returncode != 0:
-            raise MediaError(f"could not copy image subtitles: {result.stderr.decode(errors='replace').strip()[:300]}")
+        tracks = {index: Path(tmp) / f"track{index}.{code}.sup" for index, _ in candidates}
+        problem = _copy_image_tracks(video, candidates, tracks, timeout)
         sizes = {index: path.stat().st_size for index, path in tracks.items() if path.exists()}
         if not sizes or max(sizes.values()) == 0:
+            if problem:
+                raise MediaError(f"could not copy image subtitles: {problem}")
             return [], None
         best = max(sizes, key=lambda index: (sizes[index], -index))
         result = _run(["pgsrip", "rip", "--language", code, "--force", "--all", str(tracks[best])], timeout=timeout)
@@ -218,6 +214,29 @@ def ocr_subtitles(video: str | os.PathLike, candidates: list[tuple[int, dict]], 
             detail = (result.stderr or result.stdout).decode(errors="replace").strip()[-300:]
             raise MediaError(f"subtitle OCR failed: {detail}")
         return parse_srt(srt.read_text(encoding="utf-8", errors="replace")), best
+
+
+def _copy_image_tracks(video: str | os.PathLike, candidates: list[tuple[int, dict]], tracks: dict[int, Path],
+                       timeout: int) -> str:
+    """Copy picture subtitle tracks out of the container. ffmpeg does all of
+    them in one pass; when it chokes on a damaged packet (some disc rips),
+    mkvextract is more forgiving. Returns the last error, or '' on success."""
+    args = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video)]
+    for index, _ in candidates:
+        args += ["-map", f"0:s:{index}", "-c:s", "copy", str(tracks[index])]
+    result = _run(args, timeout=timeout)
+    if result.returncode == 0:
+        return ""
+    problem = result.stderr.decode(errors="replace").strip()[:300]
+    if Path(video).suffix.lower() != ".mkv" or not shutil.which("mkvextract"):
+        return problem
+    for index, stream in candidates:
+        tracks[index].unlink(missing_ok=True)
+        result = _run(["mkvextract", "tracks", str(video), f"{stream.get('index', index)}:{tracks[index]}"],
+                      timeout=timeout)
+        if result.returncode != 0:
+            problem = (result.stderr or result.stdout).decode(errors="replace").strip()[-300:]
+    return "" if any(path.exists() and path.stat().st_size for path in tracks.values()) else problem
 
 
 def read_subtitles(video: str | os.PathLike, info: dict | None = None, language: str = "eng",

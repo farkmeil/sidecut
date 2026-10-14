@@ -2,9 +2,11 @@ import json
 
 import pytest
 
-from sidecut import asr, cli, media, model
+from sidecut import align, asr, cli, media, model
 
-from test_tagger import Scripted, Window
+from test_tagger import Scripted, ScriptedAligner, Window
+
+_real_read_audio = media.read_audio   # the env fixture swaps in a stub; the render test needs the real one
 
 
 @pytest.fixture
@@ -16,6 +18,8 @@ def env(tmp_path, monkeypatch, clips):
     monkeypatch.setenv("SIDECUT_CONFIG", str(config))
     monkeypatch.delenv("PLEX_TOKEN", raising=False)
     monkeypatch.setattr(asr, "WhisperTranscriber", lambda *a, **k: Scripted())
+    monkeypatch.setattr(align, "ensure_model", lambda *a, **k: tmp_path / "fake.onnx")
+    monkeypatch.setattr(align, "OnnxAligner", lambda path, threads=0: ScriptedAligner())
     monkeypatch.setattr(media, "read_audio", lambda video, start_ms, length_ms, *a, **k: Window(start_ms, length_ms))
     return tmp_path
 
@@ -82,6 +86,24 @@ def test_validate_reports_each_file(env, tmp_path, capsys):
     assert "ok   " in out and "BAD  " in out and "end_ms must be after start_ms" in out
 
 
+def test_alignment_is_used_unless_switched_off(env, clips, capsys, monkeypatch):
+    stored = env / "filters/media/movies/Test Movie (2001)/Test Movie (2001).sidecut.json"
+    assert cli.main(["tag", str(clips["movie"])]) == 0
+    sources = {s.source for s in model.load(stored).segments}
+    assert "subtitle+align" in sources and "subtitle+asr" not in sources
+    assert cli.main(["tag", "--force", "--no-align", str(clips["movie"])]) == 0
+    sources = {s.source for s in model.load(stored).segments}
+    assert "subtitle+align" not in sources and "subtitle+asr" in sources
+    # the model cannot be fetched: say so once and carry on with recognition
+    def offline(*args, **kwargs):
+        raise align.AlignError("download failed: no network")
+
+    monkeypatch.setattr(align, "ensure_model", offline)
+    assert cli.main(["tag", "--force", str(clips["movie"])]) == 0
+    assert "forced alignment unavailable" in capsys.readouterr().err
+    assert "subtitle+asr" in {s.source for s in model.load(stored).segments}
+
+
 def test_helpful_errors(env, clips, capsys):
     assert cli.main(["show", str(clips["episode"])]) == 2
     assert "no filter found" in capsys.readouterr().err
@@ -121,3 +143,39 @@ def test_probe_against_the_lab(env, monkeypatch, capsys):
     finally:
         player.close()
         plex.close()
+
+
+def test_render_writes_a_family_tree(env, clips, capsys, tmp_path):
+    assert cli.main(["tag", str(clips["root"])]) == 0          # both test clips get language segments
+    capsys.readouterr()
+    out = tmp_path / "family"
+    assert cli.main(["render", str(clips["root"]), "--to", str(out), "--profile", "family", "--dry-run"]) == 0
+    text = capsys.readouterr().out
+    assert "would render 2, linked 0" in text and "mutes" in text
+    assert not out.exists()
+
+    assert cli.main(["render", str(clips["root"]), "--to", str(out), "--profile", "family"]) == 0
+    text = capsys.readouterr().out
+    assert "rendered 2, linked 0" in text
+    rendered = out / "movies/Test Movie (2001)/Test Movie (2001).mkv"
+    episode = out / "tv/Some Show/Season 02/Some Show - S02E05 - Pilot.mkv"
+    assert rendered.is_file() and not rendered.is_symlink() and episode.is_file()
+    surround = [s for s in media.probe(episode)["streams"] if s["codec_type"] == "audio"][0]
+    assert surround["codec_name"] == "eac3" and surround["channels"] == 6     # 5.1 stays 5.1
+    info = media.probe(rendered)
+    assert abs(media.duration_ms(info) - 45_000) < 300            # mutes only: nothing cut
+    assert [s["codec_type"] for s in info["streams"]] == ["video", "audio", "subtitle"]
+    # the muted stretch is silent, the rest is not
+    import numpy as np
+    loud = _real_read_audio(rendered, 5_000, 1_000)
+    quiet = _real_read_audio(rendered, 10_700, 300)             # inside the f-word mute (10_620..11_350 padded)
+    assert float(np.abs(loud).max()) > 0.05 and float(np.abs(quiet).max()) < 0.01
+
+    # a second run does nothing; --force renders again
+    assert cli.main(["render", str(clips["root"]), "--to", str(out), "--profile", "family"]) == 0
+    assert "rendered 0, linked 0, up to date 2" in capsys.readouterr().out
+    assert cli.main(["render", str(clips["root"]), "--to", str(out), "--profile", "family", "--force"]) == 0
+    assert "rendered 2" in capsys.readouterr().out
+    # a profile that filters nothing links everything; untagged files stay out unless asked
+    assert cli.main(["render", str(clips["root"]), "--to", str(tmp_path / "off"), "--profile", "off"]) == 0
+    assert "rendered 0, linked 2" in capsys.readouterr().out
