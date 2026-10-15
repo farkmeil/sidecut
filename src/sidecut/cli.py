@@ -247,7 +247,8 @@ def cmd_render(args: argparse.Namespace) -> int:
         return 1
     options = RenderOptions(profile=profile, source_root=source if source.is_dir() else source.parent,
                             dest_root=Path(args.to), with_skips=args.with_skips, clean=args.clean,
-                            untagged=args.untagged, force=args.force, dry_run=args.dry_run, language=args.language)
+                            untagged=args.untagged, force=args.force, dry_run=args.dry_run, language=args.language,
+                            only=None if source.is_dir() else source)
     report = render_library(_store(config), options, log=lambda message: print(message, flush=True))
     print(f"{'would render' if args.dry_run else 'rendered'} {len(report.rendered)}, linked {len(report.linked)}, "
           f"up to date {len(report.up_to_date)}, skipped {len(report.skipped)}, failed {len(report.failed)}")

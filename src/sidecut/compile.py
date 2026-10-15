@@ -60,7 +60,9 @@ def to_ffmpeg(actions: Sequence[Action], src: str, dst: str, audio_stream: int =
     """
     mutes = [a for a in actions if a.kind == "mute"]
     skips = [a for a in actions if a.kind == "skip"]
-    args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", src]
+    # make_zero: an audio encoder's priming samples would otherwise give the first audio packet a
+    # negative timestamp, which some players mishandle; shifting every stream together keeps sync
+    args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", src, "-avoid_negative_ts", "make_zero"]
     audio_filters = []
     if mutes:
         audio_filters.append(f"volume=enable='{_between(mutes)}':volume=0")

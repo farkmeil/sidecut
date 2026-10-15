@@ -176,6 +176,10 @@ def test_render_writes_a_family_tree(env, clips, capsys, tmp_path):
     assert "rendered 0, linked 0, up to date 2" in capsys.readouterr().out
     assert cli.main(["render", str(clips["root"]), "--to", str(out), "--profile", "family", "--force"]) == 0
     assert "rendered 2" in capsys.readouterr().out
+    # one video given: only that one is rendered, into the folder given
+    assert cli.main(["render", str(clips["movie"]), "--to", str(tmp_path / "one"), "--profile", "family"]) == 0
+    assert "rendered 1, linked 0" in capsys.readouterr().out
+    assert sorted(p.name for p in (tmp_path / "one").iterdir()) == ["Test Movie (2001).mkv"]
     # a profile that filters nothing links everything; untagged files stay out unless asked
     assert cli.main(["render", str(clips["root"]), "--to", str(tmp_path / "off"), "--profile", "off"]) == 0
     assert "rendered 0, linked 2" in capsys.readouterr().out

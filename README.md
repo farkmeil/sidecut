@@ -200,6 +200,11 @@ are hard-linked (or symlinked) into the tree rather than copied; files with
 no filter yet are left out, so nothing unfiltered gets in by accident. Run it
 again after re-tagging and only the changed files are redone.
 
+Every rendered file is checked against its source before it is kept: the
+audio is cross-correlated at several points through the file, and a copy
+whose sound sits more than 40 ms from the original's is rejected and
+reported, so a sync problem can never reach the library unnoticed.
+
 ## Using it without Plex
 
 ```sh
