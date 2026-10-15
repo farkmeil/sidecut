@@ -97,7 +97,8 @@ def cmd_tag(args: argparse.Namespace) -> int:
         print(f"[{number}/{len(todo)}] {video.name}", flush=True)
         try:
             options = TagOptions(language=args.language, full=args.full, allow_full=not args.no_full,
-                                 vad=not args.no_vad, ocr=not args.no_ocr, asr=not args.no_asr)
+                                 vad=not args.no_vad, ocr=not args.no_ocr, asr=not args.no_asr,
+                                 thorough=not args.quick)
             flt, report = tag_language(video, transcriber, wordlist, options,
                                        log=lambda message: print(f"    {message}", flush=True),
                                        aligner=aligner if _is_english(args.language) else None)
@@ -393,7 +394,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-align", action="store_true",
                    help="do not align subtitle text to the audio; time words by recognition alone")
     p.add_argument("--no-asr", action="store_true",
-                   help="with subtitles, skip recognition and rely on alignment alone (faster)")
+                   help="with subtitles, skip recognition on the subtitle windows and rely on alignment there")
+    p.add_argument("--quick", action="store_true",
+                   help="with subtitles, do not also transcribe the whole soundtrack (misses words the subtitles leave out)")
     p.add_argument("--align-model", default=os.environ.get("SIDECUT_ALIGN_MODEL"),
                    help="alignment model .onnx, or the folder to download it to (default: the model dir)")
     p.add_argument("--language", default="eng")

@@ -27,7 +27,7 @@ def env(tmp_path, monkeypatch, clips):
 def test_tag_show_compile_round_trip(env, clips, capsys):
     assert cli.main(["tag", str(clips["root"] / "movies")]) == 0
     out = capsys.readouterr().out
-    assert "5 language segments" in out and "f-word 1" in out
+    assert "6 language segments" in out and "f-word 1" in out and "insult 1" in out
     stored = env / "filters/media/movies/Test Movie (2001)/Test Movie (2001).sidecut.json"
     assert stored.exists()                       # central store mirrors the path Plex reports
 

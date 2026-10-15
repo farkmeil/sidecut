@@ -14,9 +14,11 @@ Method
      left out, and times words the aligner could not place.
   4. If a subtitle line shows a listed word that neither step placed, the
      whole line is tagged instead, so nothing the subtitles show slips through.
+  5. Subtitles leave words out (a cleaned-up transcript, a dropped "fucking"),
+     so the whole soundtrack is transcribed as well and anything heard that
+     the steps above did not already place is tagged too.
 
-With no usable subtitles at all the whole soundtrack is transcribed instead.
-That is slower and relies on recognition alone.
+With no usable subtitles at all, step 5 is all there is.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ class TagOptions:
     ocr: bool = True         # read image subtitles (Blu-ray PGS) by OCR when there are no text ones
     vad: bool = True         # in whole-soundtrack mode, skip stretches without speech
     asr: bool = True         # run recognition on subtitle windows as well as alignment
+    thorough: bool = True    # with subtitles, transcribe the whole soundtrack too for words they leave out
     align_min_score: float = 0.4   # below this an aligned word is treated as not placed
     align_window_max_ms: int = 45_000
     asr_slack_ms: tuple[int, int] = (130, 150)  # recognised words start and end early by about this much
@@ -168,6 +171,8 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         method = "subtitle+align+asr" if options.asr else "subtitle+align"
     else:
         method = "asr-full"
+    if cues and options.thorough:
+        method += "+full"
     report: dict = {
         "method": method,
         "subtitle_source": subtitle_source,
@@ -193,6 +198,22 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
     segments: list[Segment] = []
     heard: list[TimedMatch] = []
     aligned: list[TimedMatch] = []
+    extra: list[TimedMatch] = []   # heard in the whole soundtrack, shown by no subtitle
+
+    def listen_to_everything() -> list[TimedMatch]:
+        step = options.chunk_ms
+        position = 0
+        chunk_number = 0
+        chunks = max(1, -(-total_ms // step))
+        found: list[TimedMatch] = []
+        while position < total_ms:
+            chunk_number += 1
+            found.extend(listen(position, position + step + options.chunk_overlap_ms, vad=options.vad))
+            log(f"  chunk {chunk_number}/{chunks}")
+            position += step
+        report.update(chunks=chunks)
+        return _dedupe(found)
+
     if cues:
         hit_cues = [(index, cue, found) for index, cue in enumerate(cues) if (found := wordlist.find(cue.text))]
         windows = _merge_windows([(cue.start_ms - options.window_pad_ms, cue.end_ms + options.window_pad_ms)
@@ -249,23 +270,23 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
             ))
         report.update(subtitle_lines=len(cues), lines_with_hits=len(hit_cues), windows=len(windows),
                       words_aligned=len(aligned), whole_line_fallbacks=whole_lines)
+        if options.thorough:
+            log("listening to the whole soundtrack as well, for words the subtitles leave out")
+            whole_lines_spans = [(s.start_ms, s.end_ms) for s in segments]
+            placed = aligned + heard
+            for match in listen_to_everything():
+                middle = (match.start_ms + match.end_ms) // 2
+                if any(_same_word(match, p) for p in placed) or any(a <= middle <= b for a, b in whole_lines_spans):
+                    continue
+                extra.append(match)
+            report.update(words_unsubtitled=len(extra))
     else:
         log("no text subtitles found; transcribing the whole soundtrack" if not options.full
             else "transcribing the whole soundtrack")
-        step = options.chunk_ms
-        position = 0
-        chunk_number = 0
-        chunks = max(1, -(-total_ms // step))
-        while position < total_ms:
-            chunk_number += 1
-            heard.extend(listen(position, position + step + options.chunk_overlap_ms, vad=options.vad))
-            log(f"  chunk {chunk_number}/{chunks}")
-            position += step
-        heard = _dedupe(heard)
-        report.update(chunks=chunks)
+        heard = listen_to_everything()
 
     before, after = options.asr_slack_ms
-    for match in heard:
+    for match, source in [(m, "subtitle+asr" if cues else "asr") for m in heard] + [(m, "asr") for m in extra]:
         # recognised words come out a little early at both ends (measured in tools/timing_check.py)
         start_ms, end_ms = max(0, match.start_ms - before), min(total_ms, match.end_ms + after)
         short_by = options.min_word_ms - (end_ms - start_ms)
@@ -274,7 +295,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
             end_ms = min(total_ms, start_ms + options.min_word_ms)
         segments.append(Segment(
             start_ms=start_ms, end_ms=end_ms, category="language", severity=match.severity,
-            action="mute", tags=[match.tag], source="subtitle+asr" if cues else "asr", confidence=match.probability,
+            action="mute", tags=[match.tag], source=source, confidence=match.probability,
         ))
     for match in aligned:
         start_ms, end_ms = match.start_ms, min(total_ms, match.end_ms)
@@ -306,7 +327,7 @@ def tag_language(video: str | os.PathLike, transcriber: Transcriber, wordlist: W
         "subtitles": subtitle_source,
     }
     report.update(
-        words_located=len(heard) + len(aligned),
+        words_located=len(heard) + len(aligned) + len(extra),
         segments=len(segments),
         by_tag=_count(segments),
         elapsed_s=round(time.monotonic() - started, 1),

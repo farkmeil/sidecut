@@ -76,7 +76,7 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
 
 | Command | Does |
 |---|---|
-| `sidecut tag PATH...` | Tag language in videos or whole folders. Skips ones already done. `--no-asr` is faster, `--no-align` uses recognition alone. |
+| `sidecut tag PATH...` | Tag language in videos or whole folders. Skips ones already done. `--quick` skips the whole-soundtrack pass, `--no-align` uses recognition alone. |
 | `sidecut add VIDEO --start 1:02:03 --end 1:03:10 --category sex_nudity --severity 2` | Add a segment by hand. |
 | `sidecut show VIDEO [--profile P] [--list]` | Summarise a filter, or what a profile does with it. |
 | `sidecut compile VIDEO --profile P --format edl\|plexautoskip\|ffmpeg\|plan` | Emit a player format. |
@@ -105,10 +105,15 @@ When it looks right, set `enforce: true` in `config/sidecut.yaml` and restart.
    steps listen to the centre channel, where dialogue sits.
 4. If a subtitle shows a listed word that neither step placed, the whole line
    is tagged, so nothing the subtitles show slips through.
+5. Subtitles leave words out: a line like "Not gonna be a pool either" can be
+   spoken as "not gonna be a fucking pool either". So the whole soundtrack is
+   transcribed as well (speech detection skips music and silence, so this is
+   about 1.5 minutes for a 30-minute episode) and anything heard that the
+   steps above did not place is tagged too. `--quick` skips this.
 
-With no usable subtitles at all it transcribes the whole soundtrack instead.
-That is slower and depends on recognition alone; adding an `.srt` next to the
-file gives better results. `--no-full` skips such files and lists them.
+With no usable subtitles at all, step 5 is all there is. That depends on
+recognition alone; adding an `.srt` next to the file gives better results.
+`--no-full` skips such files and lists them.
 
 OCR needs `tesseract` and `pgsrip` (both are in the Docker image). An OCR
 misreading inside a listed word hides that line from step 1, so OCR subtitles
@@ -141,10 +146,13 @@ are words it declined to place (the score was too low); those fall back to
 recognition, then to the whole subtitle line, so nothing is lost by them.
 
 The "words placed" row is why subtitles matter. With subtitles, a word neither
-step places still gets its whole line muted. In whole-soundtrack mode a missed
-word is simply missed. Synthetic speech is harder to recognise than most film
-dialogue, so real recall should be better than this, but it will not be
-perfect.
+step places still gets its whole line muted. A word the subtitles leave out
+depends on the whole-soundtrack pass alone. Synthetic speech is harder to
+recognise than most film dialogue, so real recall is better than this table:
+on one Ted Lasso episode the whole-soundtrack pass heard 19 strong words, and
+the `medium.en` model heard no more than `small.en` at three times the cost.
+Recall will still not be perfect; the filter format exists so that the words
+it misses can be added by hand and shared.
 
 The word list is a plain text file in three tiers, grouped into families
 (`f-word`, `blasphemy`, `hell`, ...) that profiles can switch on or off. See

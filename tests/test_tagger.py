@@ -59,7 +59,7 @@ def spans(flt):
 
 def test_subtitles_choose_where_to_listen_and_speech_gives_the_timing(clips, fake_audio):
     asr = Scripted()
-    flt, report = tag_language(clips["movie"], asr, WL)
+    flt, report = tag_language(clips["movie"], asr, WL, TagOptions(thorough=False))
     located = [span for span in spans(flt) if span[4] == "subtitle+asr"]
     # recognised words are widened by the recogniser's measured early bias (130 ms before, 150 after)
     assert located == [
@@ -80,7 +80,7 @@ def test_subtitles_choose_where_to_listen_and_speech_gives_the_timing(clips, fak
 
 
 def test_filter_records_which_file_it_was_made_for(clips, fake_audio):
-    flt, _ = tag_language(clips["movie"], Scripted(), WL)
+    flt, _ = tag_language(clips["movie"], Scripted(), WL, TagOptions(thorough=False))
     assert flt.media.title == "Test Movie" and flt.media.year == 2001
     assert abs(flt.media.duration_ms - 45_000) < 300
     assert flt.media.size == clips["movie"].stat().st_size
@@ -112,7 +112,7 @@ def test_full_mode_hears_what_subtitles_leave_out_and_overlaps_are_not_double_co
 
 def test_speech_detection_is_used_only_for_whole_soundtrack_mode(clips, fake_audio):
     asr = Scripted()
-    tag_language(clips["movie"], asr, WL)
+    tag_language(clips["movie"], asr, WL, TagOptions(thorough=False))
     assert asr.vad_used and not any(asr.vad_used)          # short windows: listen to everything
     asr = Scripted([])
     tag_language(clips["episode"], asr, WL)
@@ -195,7 +195,7 @@ class ScriptedAligner:
 
 def test_alignment_times_subtitle_words_exactly_and_recognition_fills_in(clips, fake_audio):
     asr, aligner = Scripted(), ScriptedAligner()
-    flt, report = tag_language(clips["movie"], asr, WL, aligner=aligner)
+    flt, report = tag_language(clips["movie"], asr, WL, TagOptions(thorough=False), aligner=aligner)
     assert report["method"] == "subtitle+align+asr"
     aligned = [span for span in spans(flt) if span[4] == "subtitle+align"]
     assert aligned == [                                   # exact spoken intervals, no widening
@@ -214,20 +214,35 @@ def test_alignment_times_subtitle_words_exactly_and_recognition_fills_in(clips, 
     assert len(aligner.calls) == len(asr.listened) == 3
 
 
+def test_the_whole_soundtrack_is_heard_too_for_words_the_subtitles_leave_out(clips, fake_audio):
+    asr = Scripted()
+    flt, report = tag_language(clips["movie"], asr, WL, aligner=ScriptedAligner())
+    assert report["method"] == "subtitle+align+asr+full" and report["chunks"] >= 1
+    # "bastard" at 36 s is said but in no subtitle: found by the whole-soundtrack pass, marked as such
+    [extra] = [s for s in flt.segments if s.source == "asr"]
+    assert extra.tags == ["insult"] and extra.start_ms == 35_870
+    assert report["words_unsubtitled"] == 1
+    # words the subtitle windows already placed are not doubled by the second pass
+    assert [s.tags[0] for s in flt.segments].count("f-word") == 1
+    assert sum(1 for s in flt.segments if s.source == "subtitle+align") == 4
+    # the whole-soundtrack pass is the only part that uses speech detection
+    assert asr.vad_used[-1] and not any(asr.vad_used[:-1])
+
+
 def test_alignment_alone_skips_recognition(clips, fake_audio):
     asr = Scripted()
-    flt, report = tag_language(clips["movie"], asr, WL, TagOptions(asr=False), aligner=ScriptedAligner())
+    flt, report = tag_language(clips["movie"], asr, WL, TagOptions(asr=False, thorough=False), aligner=ScriptedAligner())
     assert report["method"] == "subtitle+align" and asr.listened == []
     assert sorted(s.source for s in flt.segments) == ["subtitle", "subtitle+align", "subtitle+align",
                                                       "subtitle+align", "subtitle+align"]
 
 
 def test_low_alignment_scores_fall_back_to_recognition_then_whole_line(clips, fake_audio):
-    flt, report = tag_language(clips["movie"], Scripted(), WL, aligner=ScriptedAligner(score=0.2))
+    flt, report = tag_language(clips["movie"], Scripted(), WL, TagOptions(thorough=False), aligner=ScriptedAligner(score=0.2))
     assert report["words_aligned"] == 0
     assert sorted(s.source for s in flt.segments) == ["subtitle", "subtitle+asr", "subtitle+asr", "subtitle+asr",
                                                       "subtitle+asr"]
-    flt, report = tag_language(clips["movie"], Scripted([]), WL, TagOptions(asr=False),
+    flt, report = tag_language(clips["movie"], Scripted([]), WL, TagOptions(asr=False, thorough=False),
                                aligner=ScriptedAligner(score=0.2))
     assert all(s.source == "subtitle" for s in flt.segments) and report["whole_line_fallbacks"] == 3
 
